@@ -1,0 +1,1136 @@
+#!/usr/bin/expect -f
+#
+# Script: mut_up.exp
+# Purpose: Automates MikroTik RouterOS upgrades via SSH, with optional test mode and version specification
+# Author: Sean Crites
+# Version: 1.0.16
+# Created: 2025-05-18
+# Last Updated: 2025-05-28
+#
+# Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
+# This script is licensed under the BSD 3-Clause License.
+# See the LICENSE file in the project root for the full license text.
+#
+# Requirements:
+#    - Expect (version 5.45 or later)
+#    - SSH client (OpenSSH recommended, version 7.0 or later)
+#    - scp for file transfers
+#    - sshpass (version 1.06 or later) for non-interactive SCP
+#    - sh for executing SCP commands
+#    - RouterOS .npk files in ROS_IMAGE_DIR
+#    - Credentials file with username and password
+#    - SSH access to MikroTik device (port 22, admin privileges)
+#    - Write permissions for BACKUP_DIR and LOGS_DIR
+#
+# Usage:
+#   mut_up.exp [-t|--test] [-d|--debug] [-l] [-r version] <host> <backup_dir> <ros_image_dir> <cred_file>
+# Options:
+#    -t, --test    Test mode: Simulates file upload, auto-update settings, and reboots
+#    -d, --debug   Debug mode: Enables verbose Expect debugging, displays debug details on console, and creates a debug log in LOGS_DIR (independent of -l)
+#    -l            Log mode: Creates an upgrade log in LOGS_DIR and displays messages to user
+#    -r version    Specify RouterOS version (e.g., 7.17.2 or 7.17) for upgrade or downgrade
+#
+# Notes:
+#    - The -d option generates a debug log (logs/mut_upgrade_debug_*.log) containing all CLI interactions, Expect diagnostics, and upgrade log messages, independent of -l.
+#    - Debug mode (-d) outputs debug details to both the console (stderr for diagnostics, stdout for CLI) and the debug log, with passwords suppressed for security.
+#    - Without -d, console output is limited to upgrade messages and commands (stderr), suppressing MikroTik banner and CLI interactions.
+#
+
+# Initialize variables
+set reboot_initiated 0
+set max_attempts 60
+set early_exit 0
+# Ref: https://help.mikrotik.com/docs/spaces/ROS/pages/328134/Command+Line+Interface
+# Example: admin+ct80w - will disable console colors, disable auto detection and then set terminal width to 80.
+# "w" auto auto Set terminal width
+# "h" auto auto Set terminal height
+# "c" on   off  disable/enable console colors
+# "t" off  off  Disable auto-detection of terminal capabilities
+# "e" on   off  Enables "dumb" terminal mode
+set mtik_cli "+tce200w"
+
+log_user 0
+
+# Display help message
+if {[lindex $argv 0] == "--help"} {
+   puts "Usage: [info script] \[-t|--test\] \[-d|--debug\] \[-l\] \[-r version\] <host> <backup_dir> <ros_image_dir> <cred_file>"
+   puts "Options:"
+   puts "  -t, --test    Test mode: Simulates file upload, auto-update settings, and reboots"
+   puts "  -d, --debug   Debug mode: Enables verbose Expect debugging, displays debug details on console, and creates a debug log in LOGS_DIR (independent of -l)"
+   puts "  -l            Log mode: Creates an upgrade log in LOGS_DIR and displays messages to user"
+   puts "  -r version    Specify RouterOS version (e.g., 7.17.2 or 7.17) for upgrade or downgrade"
+   exit 0
+}
+
+# Log function for normal logging
+proc log_msg {msg} {
+   global debug_mode logging log_file_handle log_file
+   set timestamp [clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]
+   puts stderr "\[$timestamp\]: $msg"
+   if {$logging && [info exists log_file_handle]} {
+      if {[catch {puts $log_file_handle "\[$timestamp\]: $msg"} err]} {
+         puts stderr "\[$timestamp\]: ERROR: Failed to write to log file $log_file: $err"
+         debug_log "Failed to write to log file $log_file: $err, message: $msg"
+      } else {
+         flush $log_file_handle
+      }
+   }
+   if {$debug_mode} {
+      debug_log "\[$timestamp\]: $msg"
+   }
+}
+
+# Log function for debug file only
+proc debug_log {msg} {
+   global debug_mode debug_file_handle
+   if {$debug_mode && [info exists debug_file_handle]} {
+      puts $debug_file_handle "\[[clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]\]: $msg"
+      flush $debug_file_handle
+   }
+}
+
+# Log function for commands sent to MikroTik
+proc log_cmd {cmd} {
+   global debug_mode logging log_file_handle
+   set timestamp [clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]
+   puts stderr "\[$timestamp\]: CMD> $cmd"
+   if {$logging && [info exists log_file_handle]} {
+      if {[catch {puts $log_file_handle "\[$timestamp\]: CMD> $cmd"} err]} {
+         puts stderr "\[$timestamp\]: ERROR: Failed to write to log file: $err"
+         debug_log "Failed to write to log file: $err, command: $cmd"
+      } else {
+         flush $log_file_handle
+      }
+   }
+   if {$debug_mode} {
+      debug_log "\[$timestamp\]: CMD> $cmd"
+   }
+}
+
+# Wrapper for sending commands to MikroTik
+proc send_cmd {cmd} {
+   log_cmd $cmd
+   send "$cmd\r"
+}
+
+# Parse key-value pairs from system output
+proc parse_system_output {output} {
+   set result {}
+   set pairs [split $output ";"]
+   foreach pair $pairs {
+      if {[regexp {([^=]+)=([^;]*)} $pair {} key value]} {
+         set key [string trim $key]
+         set value [string trim $value]
+         dict set result $key $value
+      }
+   }
+   return $result
+}
+
+# Parse command output from expect buffer
+proc parse_command_output {buffer cmd regex_pattern debug_mode} {
+   debug_log "Raw buffer: '$buffer'"
+   set normalized_buffer [regsub -all {\r+\n*|\n+} $buffer "\n"]
+   debug_log "Normalized buffer: '$normalized_buffer'"
+   set lines [split $normalized_buffer "\n"]
+   set output ""
+   set capture 0
+   foreach line $lines {
+      set line [string trim $line]
+      debug_log "Processing line: '$line'"
+      if {$line == $cmd} {
+         set capture 1
+         debug_log "Found command, capturing next non-prompt line"
+         continue
+      }
+      if {$capture && $line != "" && ![regexp {\[.*\] >} $line]} {
+         set output $line
+         debug_log "Captured output: '$output'"
+         break
+      }
+   }
+   if {$output == ""} {
+      debug_log "Fallback: searching buffer for key-value line"
+      if {[regexp $regex_pattern $normalized_buffer match]} {
+         set output [string trim $match]
+         debug_log "Captured output (fallback): '$output'"
+      }
+   }
+   if {$output != ""} {
+      debug_log "Parsing output: '$output'"
+      return [parse_system_output $output]
+   } else {
+      debug_log "No output captured"
+      return {}
+   }
+}
+
+# Compare two version strings (e.g., 7.17.2 vs 7.17.1)
+# Returns: 1 if v1 > v2, 0 if v1 == v2, -1 if v1 < v2
+proc compare_versions {v1 v2} {
+   set v1_parts [split $v1 "."]
+   set v2_parts [split $v2 "."]
+   set len [expr { [llength $v1_parts] > [llength $v2_parts] ? [llength $v1_parts] : [llength $v2_parts] }]
+   for {set i 0} {$i < $len} {incr i} {
+      set n1 [expr { $i < [llength $v1_parts] ? [lindex $v1_parts $i] : 0 }]
+      set n2 [expr { $i < [llength $v2_parts] ? [lindex $v2_parts $i] : 0 }]
+      if {$n1 > $n2} {
+         return 1
+      } elseif {$n1 < $n2} {
+         return -1
+      }
+   }
+   return 0
+}
+
+# Select RouterOS version and return .npk file path
+proc select_ros_version {version arch ros_image_dir} {
+   global debug_mode
+   set major_minor ""
+   set npk_file ""
+   set selected_version ""
+   # Validate version format (N.NN or N.NN.N)
+   if {[regexp {^[0-9]\.[0-9][0-9]$} $version]} {
+      set major_minor $version
+   } elseif {[regexp {^[0-9]\.[0-9][0-9]\.[0-9]$} $version]} {
+      set major_minor [regsub {\.[0-9]$} $version ""]
+   } else {
+      log_msg "ERROR: Invalid version format '$version'. Use N.NN or N.NN.N"
+      exit 1
+   }
+   # Set version_dir to ros_image_dir/vN.NN
+   set version_dir "$ros_image_dir/v$major_minor"
+   if {![file exists $version_dir]} {
+      log_msg "ERROR: Directory $version_dir does not exist"
+      exit 1
+   }
+   # Handle N.NN (find highest fix)
+   if {[regexp {^[0-9]\.[0-9][0-9]$} $version]} {
+      set pattern "$version_dir/routeros-$version*[0-9]-$arch.npk"
+      debug_log "Searching for highest version with pattern: $pattern"
+      set files [glob -nocomplain $pattern]
+      if {$files == ""} {
+         log_msg "ERROR: No RouterOS version found in $version_dir for architecture $arch"
+         exit 1
+      }
+      set npk_file ""
+      set latest_version "0.0.0"
+      foreach file $files {
+         if {[regexp "routeros-(\[0-9]\.\[0-9][0-9]\.\[0-9])-.*\.npk$" $file {} ver]} {
+            if {[compare_versions $ver $latest_version] > 0} {
+               set latest_version $ver
+               set npk_file $file
+            }
+         }
+      }
+      if {$npk_file == ""} {
+         log_msg "ERROR: No valid RouterOS version found in $version_dir for architecture $arch"
+         exit 1
+      }
+      set selected_version $latest_version
+      log_msg "Selected highest version: $selected_version for $arch ($npk_file)"
+   } else {
+      # Handle N.NN.N (exact match)
+      set npk_file "$version_dir/routeros-$version-$arch.npk"
+      debug_log "Checking for exact version file: $npk_file"
+      if {![file exists $npk_file]} {
+         log_msg "ERROR: Version $version not available for architecture $arch in $version_dir"
+         exit 1
+      }
+      set selected_version $version
+      log_msg "Selected exact version: $selected_version for $arch ($npk_file)"
+   }
+   return [list $npk_file $selected_version]
+}
+
+# Perform pre-flight checks
+proc preflight_checks {backup_dir ros_image_dir logging logs_dir} {
+   global debug_mode
+   if {![file exists $ros_image_dir]} {
+      log_msg "ERROR: ROS_IMAGE_DIR $ros_image_dir does not exist"
+      exit 1
+   }
+   if {![file exists $backup_dir]} {
+      log_msg "ERROR: BACKUP_DIR $backup_dir does not exist"
+      exit 1
+   }
+   if {![file writable $backup_dir]} {
+      log_msg "ERROR: BACKUP_DIR $backup_dir is not writable"
+      exit 1
+   }
+   if {$logging} {
+      if {![file exists $logs_dir]} {
+         if {[catch {file mkdir $logs_dir} err]} {
+            log_msg "ERROR: Cannot create LOGS_DIR $logs_dir: $err"
+            exit 1
+         }
+      }
+      if {![file writable $logs_dir]} {
+         log_msg "ERROR: LOGS_DIR $logs_dir is not writable"
+         exit 1
+      }
+   }
+   foreach cmd {ssh scp sshpass sh} {
+      if {[catch {exec which $cmd} result]} {
+         log_msg "ERROR: Required command '$cmd' not found in PATH"
+         exit 1
+      }
+      if {$debug_mode} {
+         log_msg "Pre-flight: Found $cmd at [exec which $cmd]"
+      }
+   }
+   log_msg "Pre-flight checks passed"
+}
+
+# Check firmware and reboot if needed
+proc check_and_reboot_firmware {host username password prompt max_attempts test_mode debug_mode logging} {
+   global escaped_host mtik_cli
+   log_msg "Checking firmware versions"
+   send_cmd ":put \[/system/routerboard/print as-value\]"
+   after 5000
+   expect {
+      -re $prompt {
+         set parsed [parse_command_output $expect_out(buffer) ":put \[/system/routerboard/print as-value\]" {current-firmware=[^\r\n;]+;.*upgrade-firmware=[^\r\n;]+} $debug_mode]
+         if {[dict size $parsed] > 0} {
+            if {[dict exists $parsed current-firmware] && [dict exists $parsed upgrade-firmware]} {
+               set current_firmware [dict get $parsed current-firmware]
+               set upgrade_firmware [dict get $parsed upgrade-firmware]
+               debug_log "Current firmware: '$current_firmware', Upgrade firmware: '$upgrade_firmware'"
+               if {$current_firmware != $upgrade_firmware} {
+                  log_msg "Firmware mismatch: current-firmware=$current_firmware, upgrade-firmware=$upgrade_firmware. Rebooting to apply."
+                  if {$test_mode} {
+                     log_msg "Test mode: Skipping firmware reboot"
+                     return 0
+                  }
+                  send_cmd "/system/reboot"
+                  expect {
+                     -re {Reboot, yes\? \[y/N\]:[ \r\n]*} {
+                        send_cmd "y"
+                        expect {
+                           eof {
+                              log_msg "Firmware reboot command sent"
+                           }
+                           timeout {
+                              log_msg "ERROR: Timeout during firmware reboot command"
+                              exit 1
+                           }
+                        }
+                     }
+                     timeout {
+                        log_msg "ERROR: Timeout waiting for firmware reboot prompt"
+                        exit 1
+                     }
+                  }
+                  log_msg "Waiting for $host_cli to reboot"
+                  set attempt 0
+                  while {$attempt < $max_attempts} {
+                     after 10000
+                     spawn ssh -o StrictHostKeyChecking=no $username$mtik_cli@$host
+                     expect {
+                        "password:" {
+                           log_user 0
+                           send "$password\r"
+                           # log_user 1
+                           expect {
+                              -re $prompt {
+                                 log_msg "Reconnected to $host_cli after firmware reboot"
+                                 break
+                              }
+                              timeout {
+                                 log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+                              }
+                           }
+                        }
+                        timeout {
+                           log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+                        }
+                     }
+                     incr attempt
+                     log_msg "Attempt $attempt of $max_attempts: Still waiting for $host"
+                  }
+                  if {$attempt >= $max_attempts} {
+                     log_msg "ERROR: Device $host_cli did not come back online after firmware reboot"
+                     exit 1
+                  }
+                  # Recheck firmware after reboot
+                  log_msg "Rechecking firmware versions"
+                  send_cmd ":put \[/system/routerboard/print as-value\]"
+                  after 5000
+                  expect {
+                     -re $prompt {
+                        set recheck_parsed [parse_command_output $expect_out(buffer) ":put \[/system/routerboard/print as-value\]" {current-firmware=[^\r\n;]+;.*upgrade-firmware=[^\r\n;]+} $debug_mode]
+                        if {[dict size $recheck_parsed] > 0} {
+                           if {[dict exists $recheck_parsed current-firmware] && [dict exists $recheck_parsed upgrade-firmware]} {
+                              set new_current_firmware [dict get $recheck_parsed current-firmware]
+                              set new_upgrade_firmware [dict get $recheck_parsed upgrade-firmware]
+                              debug_log "Recheck: Current firmware: '$new_current_firmware', Upgrade firmware: '$new_upgrade_firmware'"
+                              if {$new_current_firmware != $new_upgrade_firmware} {
+                                 log_msg "ERROR: Firmware mismatch persists: current-firmware=$new_current_firmware, upgrade-firmware=$new_upgrade_firmware"
+                                 exit 1
+                              } else {
+                                 log_msg "Firmware verified: current-firmware=$new_current_firmware, upgrade-firmware=$new_upgrade_firmware"
+                                 return 1
+                              }
+                           } else {
+                              log_msg "ERROR: No current-firmware or upgrade-firmware in recheck output"
+                              exit 1
+                           }
+                        } else {
+                           log_msg "ERROR: Failed to capture routerboard output during recheck"
+                           exit 1
+                        }
+                     }
+                     eof {
+                        log_msg "ERROR: SSH session lost during firmware recheck"
+                        exit 1
+                     }
+                     timeout {
+                        log_msg "ERROR: Timeout waiting for routerboard response during recheck"
+                        exit 1
+                     }
+                  }
+               } else {
+                  log_msg "Firmware verified: current-firmware=$current_firmware, upgrade-firmware=$upgrade_firmware"
+                  return 1
+               }
+            } else {
+               log_msg "No routerboard firmware information available, skipping firmware check"
+               return 1
+            }
+         } else {
+            log_msg "No routerboard firmware output received, skipping firmware check"
+            return 1
+         }
+      }
+      eof {
+         log_msg "ERROR: SSH session lost during firmware check"
+         exit 1
+      }
+      timeout {
+         log_msg "ERROR: Timeout waiting for routerboard response"
+         exit 1
+      }
+   }
+}
+
+# Parse arguments
+set test_mode 0
+set debug_mode 0
+set logging 0
+set target_version ""
+set argv_new {}
+set i 0
+set argc [llength $argv]
+
+while {$i < $argc} {
+   set arg [lindex $argv $i]
+   if {$arg == "--"} {
+      incr i
+      continue
+   }
+   if {$arg == "-t" || $arg == "--test"} {
+      set test_mode 1
+      incr i
+      continue
+   }
+   if {$arg == "-d" || $arg == "--debug"} {
+      set debug_mode 1
+      incr i
+      continue
+   }
+   if {$arg == "-l"} {
+      set logging 1
+      incr i
+      continue
+   }
+   if {$arg == "-r"} {
+      incr i
+      if {$i >= $argc} {
+         log_msg "ERROR: Missing version argument after -r"
+         exit 1
+      }
+      set target_version [lindex $argv $i]
+      incr i
+      continue
+   }
+   lappend argv_new $arg
+   incr i
+}
+set argv $argv_new
+
+if {[llength $argv] != 4} {
+   log_msg "ERROR: Usage: [info script] \[-t|--test\] \[-d|--debug\] \[-l\] \[-r version\] <host> <backup_dir> <ros_image_dir> <cred_file>"
+   exit 1
+}
+
+set host_cli [lindex $argv 0]
+set backup_dir [lindex $argv 1]
+set ros_image_dir [lindex $argv 2]
+set cred_file [lindex $argv 3]
+
+set script_dir [file dirname [info script]]
+set logs_dir "$script_dir/logs"
+
+# Source options file
+set options_file "$script_dir/mut_opt.conf"
+if {[file exists $options_file] && [file readable $options_file]} {
+   set fp [open $options_file r]
+   while {[gets $fp line] >= 0} {
+      if {[regexp {^\s*(\w+)\s*=\s*(.+?)\s*$} $line {} key value]} {
+         set value [string trim $value]
+         if {$value != ""} {
+            if {[regexp {\$PWD} $value]} {
+               if {[info exists env(PWD)]} {
+                  set value [string map [list "\$PWD" $env(PWD)] $value]
+               } else {
+                  log_msg "WARNING: Environment variable PWD not set, using current directory"
+                  set value [string map [list "\$PWD" [pwd]] $value]
+               }
+            }
+            if {$key == "ROS_IMAGE_DIR"} {
+               set ros_image_dir $value
+            } elseif {$key == "BACKUP_DIR"} {
+               set backup_dir $value
+            } elseif {$key == "LOGS_DIR"} {
+               set logs_dir $value
+            } elseif {$key == "SSH_TIMEOUT"} {
+               set timeout $value
+            }
+            if {$debug_mode} {
+               log_msg "Set $key=$value from $options_file"
+            }
+         }
+      }
+   }
+   close $fp
+}
+
+if {[regexp {\$PWD} $logs_dir]} {
+   if {[info exists env(PWD)]} {
+      set logs_dir [string map [list "\$PWD" $env(PWD)] $logs_dir]
+   } else {
+      log_msg "WARNING: Environment variable PWD not set, using current directory"
+      set logs_dir [string map [list "\$PWD" [pwd]] $logs_dir]
+   }
+}
+
+# Set up logging
+if {$logging} {
+   set log_file "$logs_dir/mut_upgrade_[clock format [clock seconds] -format %Y%m%d_%H%M%S].log"
+   if {[catch {open $log_file w} log_file_handle]} {
+      log_msg "ERROR: Failed to open log file $log_file: $log_file_handle"
+      exit 1
+   }
+   debug_log "Opened log file $log_file with handle $log_file_handle"
+   if {[catch {chan configure $log_file_handle -buffering line} err]} {
+      log_msg "WARNING: Failed to configure log file channel $log_file: $err"
+      debug_log "Failed to configure log file channel: $err"
+   }
+   set log_start_time [clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]
+   if {[catch {puts $log_file_handle "Log file opened at $log_start_time"} err]} {
+      log_msg "WARNING: Failed to write to log file $log_file: $err"
+      debug_log "Failed to write to log file: $err"
+   } else {
+      flush $log_file_handle
+      log_msg "Logging enabled: Output will be saved to $log_file"
+   }
+}
+
+# Enable debug mode
+if {$debug_mode} {
+   exp_internal 1
+   set debug_file "$logs_dir/mut_upgrade_debug_[clock format [clock seconds] -format %Y%m%d_%H%M%S].log"
+   if {[catch {open $debug_file w} debug_file_handle]} {
+      log_msg "ERROR: Failed to open debug log file $debug_file: $debug_file_handle"
+      exit 1
+   }
+   set debug_start_time [clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]
+   if {[catch {puts $debug_file_handle "Debug log opened at $debug_start_time"} err]} {
+      log_msg "WARNING: Failed to write to debug log file $debug_file: $err"
+   } else {
+      flush $debug_file_handle
+      log_msg "Debug mode enabled, logging to $debug_file"
+   }
+   log_file -a $debug_file
+   log_user 1
+}
+
+# Run pre-flight checks
+preflight_checks $backup_dir $ros_image_dir $logging $logs_dir
+
+# Strip .example.com from host for prompt matching
+set host [regsub {\.example\.com$} $host_cli ""]
+debug_log "Original host: '$host_cli', Stripped host: '$host'"
+
+# Read credentials
+if {![file readable $cred_file]} {
+   log_msg "ERROR: Credential file $cred_file is not readable"
+   exit 1
+}
+set fp [open $cred_file r]
+set creds [read $fp]
+close $fp
+
+set username ""
+set password ""
+foreach line [split $creds "\n"] {
+   if {[regexp {^username=(.*)$} $line {} value]} {
+      set username $value
+   } elseif {[regexp {^password=(.*)$} $line {} value]} {
+     #pragma: password
+      set password $value
+   }
+}
+
+if {$username == "" || $password == ""} {
+   log_msg "ERROR: Missing username or password in $cred_file"
+   exit 1
+}
+
+# Parsing and setting host
+set escaped_host [regsub -all {[][\\+*.?{}()^$|]} $host {\\&}]
+set escaped_username [regsub -all {[][\\+*.?{}()^$|]} $username {\\&}]
+
+set prompt "\\\[.*@${escaped_host}\\\] > \$"
+
+# Connect to MikroTik
+log_msg "Connecting to $host_cli as $username"
+spawn ssh -o StrictHostKeyChecking=no $username$mtik_cli@$host
+expect {
+   "password:" {
+      log_user 0
+      send "$password\r"
+      # log_user 1
+      expect {
+         -re {\r\n(?:\r\n)*\s*MMM.*\r\n} {
+            exp_continue
+         }
+         -re {\r\n\s*MikroTik.*\r\n} {
+            exp_continue
+         }
+         -re {\r\n\s*Press F1.*\r\n} {
+            exp_continue
+         }
+         -re $prompt {
+            log_msg "Logged in to $host"
+         }
+         "Permission denied" {
+            log_msg "ERROR: Permission denied for $username@$host. Please check credentials in $cred_file and ensure SSH access is allowed (port 22, firewall settings)."
+            exit 1
+         }
+         "Login failed" {
+            log_msg "ERROR: Login failed for $username@$host"
+            exit 1
+         }
+         timeout {
+            log_msg "ERROR: Timeout waiting for prompt after password"
+            exit 1
+         }
+      }
+   }
+   "Connection refused" {
+      log_msg "ERROR: Connection refused to $host"
+      exit 1
+   }
+   timeout {
+      log_msg "ERROR: Timeout connecting to $host"
+      exit 1
+   }
+}
+
+# Check for pending firmware upgrade
+log_msg "Checking for pending firmware upgrade"
+send_cmd ":put \[/system/routerboard/print as-value\]"
+after 3000
+expect {
+   -re $prompt {
+      set parsed [parse_command_output $expect_out(buffer) ":put \[/system/routerboard/print as-value\]" {current-firmware=[^\r\n;]+;.*upgrade-firmware=[^\r\n;]+} $debug_mode]
+      if {[dict size $parsed] > 0} {
+         if {[dict exists $parsed current-firmware] && [dict exists $parsed upgrade-firmware]} {
+            set current_firmware [dict get $parsed current-firmware]
+            set upgrade_firmware [dict get $parsed upgrade-firmware]
+            debug_log "Current firmware: '$current_firmware', Upgrade firmware: '$upgrade_firmware'"
+            if {$current_firmware == $upgrade_firmware && $target_version != "" && $current_firmware == $target_version} {
+               set early_exit 1
+               log_msg "Firmware up-to-date: current-firmware=$current_firmware, upgrade-firmware=$upgrade_firmware"
+            } elseif {$current_firmware != $upgrade_firmware} {
+               log_msg "Firmware upgrade pending: current-firmware=$current_firmware, upgrade-firmware=$upgrade_firmware. Rebooting to apply."
+               if {$test_mode} {
+                  log_msg "Test mode: Skipping firmware reboot"
+               } else {
+                  send_cmd "/system/reboot"
+                  expect {
+                     -re {Reboot, yes\? \[y/N\]:[ \r\n]*} {
+                        send_cmd "y"
+                        expect {
+                           eof {
+                              log_msg "Firmware reboot command sent"
+                           }
+                           timeout {
+                              log_msg "ERROR: Timeout during firmware reboot command"
+                              exit 1
+                           }
+                        }
+                     }
+                     timeout {
+                        log_msg "ERROR: Timeout waiting for firmware reboot prompt"
+                        exit 1
+                     }
+                  }
+                  log_msg "Waiting for $host_cli to reboot"
+                  set attempt 0
+                  while {$attempt < $max_attempts} {
+                     after 10000
+                     spawn ssh -o StrictHostKeyChecking=no $username$mtik_cli@$host
+                     expect {
+                        "password:" {
+                           log_user 0
+                           send "$password\r"
+                           # log_user 1
+                           expect {
+                              -re $prompt {
+                                 log_msg "Reconnected to $host_cli after firmware reboot"
+                                 break
+                              }
+                              timeout {
+                                 log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+                              }
+                           }
+                        }
+                        timeout {
+                           log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+                        }
+                     }
+                     incr attempt
+                     log_msg "Attempt $attempt of $max_attempts: Still waiting for $host"
+                  }
+                  if {$attempt >= $max_attempts} {
+                     log_msg "ERROR: Device $host_cli did not come back online after firmware reboot"
+                     exit 1
+                  }
+               }
+            } else {
+               log_msg "Firmware up-to-date: current-firmware=$current_firmware, upgrade-firmware=$upgrade_firmware"
+            }
+         } else {
+            log_msg "No routerboard firmware information available, proceeding without firmware check"
+         }
+      } else {
+         log_msg "No routerboard firmware output received, proceeding without firmware check"
+      }
+   }
+   eof {
+      log_msg "ERROR: SSH session lost during routerboard query"
+      exit 1
+   }
+   timeout {
+      log_msg "ERROR: Timeout waiting for routerboard response"
+      exit 1
+   }
+}
+
+# Backup configuration
+set timestamp [clock format [clock seconds] -format "%Y%m%d_%H%M%S"]
+set backup_file "$backup_dir/config.$host-$timestamp.rsc"
+log_msg "Backing up configuration to $backup_file"
+send_cmd ":put \[/export file=backup-$timestamp show-sensitive\]"
+expect {
+   -re $prompt {
+      log_msg "Downloading backup file"
+      set scp_cmd "SSHPASS='$password' sshpass -e scp -o StrictHostKeyChecking=no $username@$host:backup-$timestamp.rsc $backup_file"
+      if {[catch {exec sh -c $scp_cmd} result]} {
+         log_msg "ERROR: SCP download failed: $result"
+         exit 1
+      }
+      log_msg "Backup saved to $backup_file"
+      if {![file readable $backup_file]} {
+         log_msg "ERROR: Backup file $backup_file is not readable"
+         exit 1
+      }
+      set fp [open $backup_file r]
+      set config_content [read $fp]
+      close $fp
+      if {$config_content == ""} {
+         log_msg "ERROR: Backup file $backup_file is empty"
+         exit 1
+      }
+      set fp [open $backup_file w]
+      puts $fp $config_content
+      close $fp
+      log_msg "Backup verified and saved"
+      send_cmd "/file/remove backup-$timestamp.rsc"
+      expect {
+         -re $prompt {
+            log_msg "Backup file backup-$timestamp.rsc deleted from $host"
+            if {$early_exit} {
+               log_msg "Current version $current_firmware matches target version $target_version, no upgrade needed"
+               log_user 1
+               if {$logging && [info exists log_file_handle]} {
+                  debug_log "Closing log file handle: $log_file_handle"
+                  close $log_file_handle
+               }
+               if {$debug_mode && [info exists debug_file_handle]} {
+                  debug_log "Closing debug file handle: $debug_file_handle"
+                  close $debug_file_handle
+               }
+               exit 0
+            }
+         }
+         eof {
+            log_msg "ERROR: SSH session lost during backup file deletion"
+            exit 1
+         }
+         timeout {
+            log_msg "WARNING: Timeout waiting for backup file deletion response, proceeding"
+         }
+      }
+   }
+   eof {
+      log_msg "ERROR: Backup command failed"
+      exit 1
+   }
+   timeout {
+      log_msg "ERROR: Backup command timeout"
+      exit 1
+   }
+}
+
+# Get system information
+log_msg "Collecting system information"
+send_cmd ":put \[/system/resource/print as-value\]"
+after 1000
+expect {
+   -re $prompt {
+      set parsed [parse_command_output $expect_out(buffer) ":put \[/system/resource/print as-value\]" {:put \[/system/resource/print as-value\].*?\r\n\r([^\r\n]+)\r\n} $debug_mode]
+      if {[dict size $parsed] > 0} {
+         if {[dict exists $parsed architecture-name] && [dict exists $parsed version]} {
+            set arch [string trim [dict get $parsed architecture-name]]
+            set raw_version [dict get $parsed version]
+            if {[regexp {^([0-9.]+)} $raw_version {} current_version]} {
+               debug_log "Parsed version: '$raw_version' -> '$current_version'"
+            } else {
+               set current_version $raw_version
+            }
+            log_msg "Architecture: $arch"
+            log_msg "Current version: $current_version"
+         } else {
+            log_msg "ERROR: Failed to parse architecture-name or version from system resource output"
+            exit 1
+         }
+      } else {
+         log_msg "ERROR: No system resource output received"
+         exit 1
+      }
+   }
+   eof {
+      log_msg "ERROR: SSH session lost during system resource query"
+      exit 1
+   }
+   timeout {
+      log_msg "ERROR: Timeout waiting for system resource response"
+      exit 1
+   }
+}
+
+# Find appropriate .npk file
+log_msg "Searching for .npk file in $ros_image_dir for architecture $arch"
+set npk_file ""
+set npk_version ""
+if {$target_version != ""} {
+   set result [select_ros_version $target_version $arch $ros_image_dir]
+   set npk_file [lindex $result 0]
+   set npk_version [lindex $result 1]
+} else {
+   set found_files {}
+   foreach file [glob -nocomplain $ros_image_dir/v*/routeros-*.npk] {
+      debug_log "Checking file: $file"
+      if {[regexp "routeros-(\[0-9.\]+)-${arch}\\.npk$" $file {} version]} {
+         debug_log "Match found: $file (version $version)"
+         lappend found_files [list $file $version]
+         if {$npk_file == "" || [compare_versions $version $npk_version] > 0} {
+            set npk_file $file
+            set npk_version $version
+         }
+      } else {
+         debug_log "No match for architecture $arch: $file"
+      }
+   }
+   if {$npk_file == ""} {
+      log_msg "ERROR: No ROS image matching architecture $arch found in $ros_image_dir, no upgrade possible"
+      exit 1
+   }
+   log_msg "Selected .npk file: $npk_file (version $npk_version)"
+}
+
+# Check if current version matches or is newer than target version
+set version_cmp [compare_versions $current_version $npk_version]
+if {$version_cmp > 0} {
+   log_msg "Current version $current_version is newer than target version $npk_version, checking for downgrade"
+} elseif {$version_cmp == 0} {
+   log_msg "Current version $current_version matches target version $npk_version, no upgrade needed"
+   log_user 1
+   exit 0
+}
+
+# Determine if downgrade is required
+set downgrade_required [expr {$version_cmp > 0}]
+if {$downgrade_required} {
+   log_msg "Downgrade required to version $npk_version"
+}
+
+# Upload .npk file (or simulate in test mode)
+if {$test_mode} {
+   log_msg "Test mode: Skipping file upload for $npk_file"
+} else {
+   log_msg "Uploading $npk_file to $host"
+   set scp_cmd "SSHPASS='$password' sshpass -e scp -o StrictHostKeyChecking=no $npk_file $username@$host:/[file tail $npk_file]"
+   if {[catch {exec sh -c $scp_cmd} result]} {
+      log_msg "ERROR: SCP download failed: $result"
+      exit 1
+   }
+   log_msg "File upload completed"
+}
+
+# Perform upgrade or downgrade
+if {$downgrade_required} {
+   if {$test_mode} {
+      log_msg "Test mode: Skipping downgrade to $npk_version"
+   } else {
+      log_msg "Initiating downgrade"
+      send_cmd "/system package downgrade"
+      expect {
+         -re {Router will be rebooted. Continue\? \[y/N\]:[ \r\n]*} {
+            send_cmd "y"
+            expect {
+               eof {
+                  log_msg "Downgrade reboot command sent"
+                  set reboot_initiated 1
+               }
+               timeout {
+                  log_msg "ERROR: Timeout during downgrade reboot command"
+                  exit 1
+               }
+            }
+         }
+         timeout {
+            log_msg "ERROR: Timeout waiting for downgrade prompt"
+            exit 1
+         }
+      }
+   }
+} else {
+   if {$test_mode} {
+      log_msg "Test mode: Skipping enabling auto-upgrade"
+   } else {
+      log_msg "Enabling auto-upgrade"
+      send_cmd "/system/routerboard/settings/set auto-upgrade=yes"
+      expect {
+         -re $prompt {
+            log_msg "Auto-upgrade enabled"
+         }
+         -re {.*expected end of command.*} {
+            log_msg "WARNING: Auto-upgrade command failed, proceeding with manual reboot"
+         }
+         timeout {
+            log_msg "ERROR: Timeout waiting for auto-upgrade response"
+            exit 1
+         }
+      }
+      log_msg "Initiating reboot"
+      send_cmd "/system/reboot"
+      expect {
+         -re {Reboot, yes\? \[y/N\]:[ \r\n]*} {
+            send_cmd "y"
+            expect {
+               eof {
+                  log_msg "Reboot command sent"
+                  set reboot_initiated 1
+               }
+               timeout {
+                  log_msg "ERROR: Timeout during reboot command"
+                  exit 1
+               }
+            }
+         }
+         timeout {
+            log_msg "ERROR: Timeout waiting for reboot prompt"
+            exit 1
+         }
+      }
+   }
+}
+
+# Skip reboot if already initiated
+if {$test_mode} {
+   log_msg "Test mode: Skipping reboot"
+   log_msg "Test mode: Simulating successful upgrade to version $npk_version"
+   log_user 1
+   exit 0
+} elseif {$reboot_initiated} {
+   log_msg "Reboot already initiated"
+} else {
+   log_msg "ERROR: No reboot initiated, this should not happen"
+   exit 1
+}
+
+# Wait for device to come back online
+log_msg "Waiting for $host_cli to reboot"
+set attempt 0
+while {$attempt < $max_attempts} {
+   after 10000
+   spawn ssh -o StrictHostKeyChecking=no $username$mtik_cli@$host
+   expect {
+      "password:" {
+         log_user 0
+         send "$password\r"
+         # log_user 1
+         expect {
+            -re $prompt {
+               log_user 1
+               log_msg "Reconnected to $host_cli after reboot"
+               log_user 0
+               break
+            }
+            timeout {
+               log_user 1
+               log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+               log_user 0
+            }
+         }
+      }
+      timeout {
+         log_user 1
+         log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+         log_user 0
+      }
+   }
+   incr attempt
+   log_msg "Attempt $attempt of $max_attempts: Still waiting for $host"
+
+}
+
+if {$attempt >= $max_attempts} {
+   log_msg "ERROR: Device $host_cli did not come back online"
+   exit 1
+}
+
+# Verify new version
+log_msg "Verifying new version"
+send_cmd ":put \[/system/routerboard/print as-value\]"
+after 1000
+expect {
+   -re $prompt {
+      set parsed [parse_command_output $expect_out(buffer) ":put \[/system/routerboard/print as-value\]" {current-firmware=[^\r\n;]+;.*upgrade-firmware=[^\r\n;]+} $debug_mode]
+      if {[dict size $parsed] > 0} {
+         if {[dict exists $parsed current-firmware] && [dict exists $parsed upgrade-firmware]} {
+            set current_firmware [dict get $parsed current-firmware]
+            set upgrade_firmware [dict get $parsed upgrade-firmware]
+            debug_log "Current firmware: '$current_firmware', Upgrade firmware: '$upgrade_firmware'"
+            if {$current_firmware != $upgrade_firmware} {
+               log_msg "Firmware upgrade pending: current-firmware=$current_firmware, upgrade-firmware=$upgrade_firmware. Rebooting to apply."
+               if {$test_mode} {
+                  log_msg "Test mode: Skipping firmware reboot"
+               } else {
+                  send_cmd "/system/reboot"
+                  expect {
+                     -re {Reboot, yes\? \[y/N\]:[ \r\n]*} {
+                        send_cmd "y"
+                        expect {
+                           eof {
+                              log_msg "Firmware reboot command sent"
+                           }
+                           timeout {
+                              log_msg "ERROR: Timeout during firmware reboot command"
+                              exit 1
+                           }
+                        }
+                     }
+                     timeout {
+                        log_msg "ERROR: Timeout waiting for firmware reboot prompt"
+                        exit 1
+                     }
+                  }
+                  log_msg "Waiting for $host_cli to reboot"
+                  set attempt 0
+                  while {$attempt < $max_attempts} {
+                     after 10000
+                     spawn ssh -o StrictHostKeyChecking=no $username$mtik_cli@$host
+                     expect {
+                        "password:" {
+                           log_user 0
+                           send "$password\r"
+                           # log_user 1
+                           expect {
+                              -re $prompt {
+                                 log_user 1
+                                 log_msg "Reconnected to $host_cli after firmware reboot"
+                                 log_user 0
+                                 break
+                              }
+                              timeout {
+                                 log_user 1
+                                 log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+                                 log_user 0
+                              }
+                           }
+                        }
+                        timeout {
+                           log_user 1
+                           log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
+                           log_user 0
+
+                        }
+                     }
+                     incr attempt
+                     log_msg "Attempt $attempt of $max_attempts: Still waiting for $host"
+                  }
+                  if {$attempt >= $max_attempts} {
+                     log_msg "ERROR: Device $host_cli did not come back online after firmware reboot"
+                     exit 1
+                  }
+               }
+            } else {
+               log_msg "Firmware up-to-date: current-firmware=$current_firmware, upgrade-firmware=$upgrade_firmware"
+            }
+         } else {
+            log_msg "No routerboard firmware information available, proceeding without firmware check"
+         }
+      } else {
+         log_msg "No routerboard firmware output received, proceeding without firmware check"
+      }
+   }
+   eof {
+      log_msg "ERROR: SSH session lost during routerboard query"
+      exit 1
+   }
+   timeout {
+      log_msg "ERROR: Timeout waiting for routerboard response"
+      exit 1
+   }
+}
+
+# Final firmware check (for both upgrades and downgrades)
+if {!$test_mode} {
+   set firmware_verified [check_and_reboot_firmware $host_cli $username $password $prompt $max_attempts $test_mode $debug_mode $logging]
+   if {!$firmware_verified} {
+      log_msg "ERROR: Final firmware verification failed"
+      exit 1
+   }
+}
+
+# Log success message
+log_msg "Upgrade process completed successfully for $host"
+
+# Clean up
+if {$logging && [info exists log_file_handle]} {
+   debug_log "Closing log file handle: $log_file_handle"
+   close $log_file_handle
+}
+if {$debug_mode && [info exists debug_file_handle]} {
+   debug_log "Closing debug file handle: $debug_file_handle"
+   close $debug_file_handle
+   log_file
+}
+log_user 0
+
+exit 0
