@@ -3,9 +3,9 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.0.2
+# Version: 1.0.3
 # Created: 2025-05-18
-# Last Updated: 2025-05-25
+# Last Updated: 2025-05-31
 #
 # Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
 # This script is licensed under the BSD 3-Clause License.
@@ -31,7 +31,7 @@
 #    - Upgrade mode (-u):
 #        - Without -c: Upgrades <host> directly (no CSV, <host> required).
 #        - With -c: Upgrades hosts from existing csv_file (in $HOME or specified path) matching -f filter (no <host>, -f required).
-#    - Filter (-f) matches board_name first, then identity (alphanumeric, case-insensitive).
+#    - Filter (-f) matches model_name first, then identity (alphanumeric, case-insensitive).
 #    - Version (-r version): Specifies RouterOS version (N.NN or N.NN.N). N.NN selects highest fix in os/vN.NN; N.NN.N selects exact version.
 #    - Test mode (-t) simulates upgrades using -t flag in mut_up.exp.
 #    - Debug mode (-d) enables debug output and passes -d to mut_up.exp.
@@ -67,7 +67,7 @@ usage()
    echo "   -d             Enable debug output and pass to expect script"
    echo "   -t             Enable test mode (simulates upgrades using -t in expect script)"
    echo "   -l             Enable logging to LOGS_DIR and display output"
-   echo "   -f filter      Filter hosts to upgrade by board_name or identity (alphanumeric, requires -u and -c)"
+   echo "   -f filter      Filter hosts to upgrade by model_name or identity (alphanumeric, requires -u and -c)"
    echo "   -r version     Specify RouterOS version (e.g., 7.18 or 7.18.2) for upgrades (requires -u)"
    echo "   -o options_file   Source variables from options file (default: mut_opt.conf)"
    echo "Notes:"
@@ -310,16 +310,16 @@ parse_neighbors()
    if [ -z "$raw_data" ] || ! echo "$raw_data" | grep -q '.id='
    then
       log_msg "WARNING: No valid neighbors found in output"
-      echo "identity,ip_addr,mac_addr,interface,platform,board_name,version,status"
+      echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,status"
       return
    fi
    tmp_output="/tmp/mikrotik_neighbors_$$.csv"
    echo "$raw_data" | awk -v debug="$DEBUG" '
       BEGIN {
          RS=";"; FS="="; OFS=",";
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; board=""; version=""; status=""
+         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; status=""
          count=0
-         print "identity,ip_addr,mac_addr,interface,platform,board_name,version,status"
+         print "identity,ip_addr,mac_addr,interface,platform,model_name,version,status"
       }
       /.id=/ {
          if (identity != "" && ip_addr != "") {
@@ -330,12 +330,12 @@ parse_neighbors()
                mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
                iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
                platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
-               board_esc=board; gsub(/"/, "\"\"", board_esc)
+               model_esc=model; gsub(/"/, "\"\"", model_esc)
                version_esc=version; gsub(/"/, "\"\"", version_esc)
                status_esc=status; gsub(/"/, "\"\"", status_esc)
                printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                       identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, board_esc, version_esc, status_esc
+                      platform_esc, model_esc, version_esc, status_esc
                if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
                count++
             } else {
@@ -344,13 +344,13 @@ parse_neighbors()
          } else if (identity != "") {
             if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
          }
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; board=""; version=""; status=""
+         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; status=""
       }
       /^address=/ { ip_addr=$2; if (debug) print "Debug: Set ip_addr=" ip_addr > "/dev/stderr" }
       /^mac-address=/ { mac_addr=$2; if (debug) print "Debug: Set mac_addr=" mac_addr > "/dev/stderr" }
       /^identity=/ { identity=$2 }
       /^interface=/ { iface=$2 }
-      /^board=/ { board=$2 }
+      /^board=/ { model=$2 }
       /^version=/ {
          version=$2;
          sub(/ \(.*/, "", version)
@@ -364,12 +364,12 @@ parse_neighbors()
                mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
                iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
                platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
-               board_esc=board; gsub(/"/, "\"\"", board_esc)
+               model_esc=model; gsub(/"/, "\"\"", model_esc)
                version_esc=version; gsub(/"/, "\"\"", version_esc)
                status_esc=status; gsub(/"/, "\"\"", status_esc)
                printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                       identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, board_esc, version_esc, status_esc
+                      platform_esc, model_esc, version_esc, status_esc
                if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
                count++
             } else {
@@ -397,10 +397,10 @@ build_inventory()
    host="$1"
    csv_file="$2"
    log_msg "Building inventory for $host"
-   raw_data=$(ssh_exec "$host" ":put [/ip neighbor print as-value]")
+   raw_data=$(ssh_exec "$host" ":put [/ip/neighbor/print as-value]")
    if [ -z "$raw_data" ]
    then
-      log_msg "ERROR: Empty output from :put [/ip neighbor print as-value]"
+      log_msg "ERROR: Empty output from :put [/ip/neighbor/print as-value]"
       exit 1
    fi
    log_msg "Parsing neighbor data"
@@ -458,7 +458,7 @@ filter_hosts()
       }
       NR==1 { next }
       {
-         board_name=tolower(gsub(/^"|"$/,"",$6))
+         model_name=tolower(gsub(/^"|"$/,"",$6))
          identity=tolower(gsub(/^"|"$/,"",$1))
          if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
             print $1,$6; count++
@@ -477,9 +477,9 @@ filter_hosts()
       exit 1
    fi
    log_msg "Hosts matched by filter '$filter':"
-   while IFS=',' read -r identity board_name
+   while IFS=',' read -r identity model_name
    do
-      log_msg "  Identity: $identity, Board: $board_name"
+      log_msg "  Identity: $identity, Model: $model_name"
    done < "$tmp_hosts"
    echo "$tmp_hosts"
 }
@@ -508,23 +508,6 @@ run_upgrade()
    host="$1"
    csv_file="$2"
    log_msg "Running upgrade on $host"
-   # Get architecture from CSV or SSH
-   if [ -n "$csv_file" ]
-   then
-      arch=$(awk -F',' -v host="$host" 'NR>1 && $1=="\""host"\"" {gsub(/^"|"$/,"",$6); print $6}' "$csv_path" | grep -o 'mipsbe\|arm\|arm64\|tile' | sed 's/[[:space:]]*$//')
-      if [ -z "$arch" ]
-      then
-         log_msg "ERROR: Architecture not found for $host in $csv_path"
-         exit 1
-      fi
-   else
-      arch=$(ssh_exec "$host" "/system resource print" | grep architecture-name | sed 's/.*architecture-name:[[:space:]]*//' | sed 's/[[:space:]]*$//')
-      if [ -z "$arch" ]
-      then
-         log_msg "ERROR: Failed to retrieve architecture for $host"
-         exit 1
-      fi
-   fi
    # Build expect command
    expect_cmd="expect -f \"$EXPECT_SCRIPT\""
    if [ "$TEST_MODE" -eq 1 ]
@@ -692,11 +675,11 @@ main()
    fi
    # Pre-flight checks
    preflight_checks
-   # Prompt for credentials once
-   prompt_credentials
    host="$1"
    case "$mode" in
       -b)
+         # Build mode requires credentials for SSH
+         prompt_credentials
          build_inventory "$host" "$csv_file"
          ;;
       -u)
@@ -705,14 +688,17 @@ main()
             log_msg "Reading inventory from $csv_file"
             hosts_file=$(filter_hosts "$csv_file" "$FILTER")
             confirm_upgrades "$hosts_file"
+            # Prompt for credentials only after confirmation
+            prompt_credentials
             log_msg "Processing upgrades for filtered hosts in $csv_file"
-            while IFS=',' read -r target_host board_name
+            while IFS=',' read -r target_host model_name
             do
-               prompt_credentials
                run_upgrade "$target_host" "$csv_file"
             done < "$hosts_file"
             rm -f "$hosts_file"
          else
+            # Direct upgrade requires credentials immediately
+            prompt_credentials
             log_msg "Upgrading host $host"
             run_upgrade "$host" ""
          fi
@@ -721,7 +707,7 @@ main()
          usage
          ;;
    esac
-   rm -f "$CRED_FILE"
+   rm -f "$CRED_FILE" 2>/dev/null
 }
 
 # --- Script Entry Point ---
