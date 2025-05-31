@@ -506,7 +506,6 @@ confirm_upgrades()
 run_upgrade()
 {
    host="$1"
-   csv_file="$2"
    log_msg "Running upgrade on $host"
    # Get architecture from CSV or SSH
    if [ -n "$csv_file" ]
@@ -709,12 +708,12 @@ main()
             while IFS=',' read -r target_host board_name
             do
                prompt_credentials
-               run_upgrade "$target_host" "$csv_file"
+               run_upgrade "$target_host"
             done < "$hosts_file"
             rm -f "$hosts_file"
          else
             log_msg "Upgrading host $host"
-            run_upgrade "$host" ""
+            run_upgrade "$host"
          fi
          ;;
       *)
