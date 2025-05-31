@@ -692,11 +692,11 @@ main()
    fi
    # Pre-flight checks
    preflight_checks
-   # Prompt for credentials once
-   prompt_credentials
    host="$1"
    case "$mode" in
       -b)
+         # Build mode requires credentials for SSH
+         prompt_credentials
          build_inventory "$host" "$csv_file"
          ;;
       -u)
@@ -705,14 +705,17 @@ main()
             log_msg "Reading inventory from $csv_file"
             hosts_file=$(filter_hosts "$csv_file" "$FILTER")
             confirm_upgrades "$hosts_file"
+            # Prompt for credentials only after confirmation
+            prompt_credentials
             log_msg "Processing upgrades for filtered hosts in $csv_file"
             while IFS=',' read -r target_host board_name
             do
-               prompt_credentials
                run_upgrade "$target_host" "$csv_file"
             done < "$hosts_file"
             rm -f "$hosts_file"
          else
+            # Direct upgrade requires credentials immediately
+            prompt_credentials
             log_msg "Upgrading host $host"
             run_upgrade "$host" ""
          fi
@@ -721,7 +724,7 @@ main()
          usage
          ;;
    esac
-   rm -f "$CRED_FILE"
+   rm -f "$CRED_FILE" 2>/dev/null
 }
 
 # --- Script Entry Point ---
