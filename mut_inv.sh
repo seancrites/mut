@@ -508,23 +508,6 @@ run_upgrade()
    host="$1"
    csv_file="$2"
    log_msg "Running upgrade on $host"
-   # Get architecture from CSV or SSH
-   if [ -n "$csv_file" ]
-   then
-      arch=$(awk -F',' -v host="$host" 'NR>1 && $1=="\""host"\"" {gsub(/^"|"$/,"",$6); print $6}' "$csv_path" | grep -o 'mipsbe\|arm\|arm64\|tile' | sed 's/[[:space:]]*$//')
-      if [ -z "$arch" ]
-      then
-         log_msg "ERROR: Architecture not found for $host in $csv_path"
-         exit 1
-      fi
-   else
-      arch=$(ssh_exec "$host" "/system resource print" | grep architecture-name | sed 's/.*architecture-name:[[:space:]]*//' | sed 's/[[:space:]]*$//')
-      if [ -z "$arch" ]
-      then
-         log_msg "ERROR: Failed to retrieve architecture for $host"
-         exit 1
-      fi
-   fi
    # Build expect command
    expect_cmd="expect -f \"$EXPECT_SCRIPT\""
    if [ "$TEST_MODE" -eq 1 ]
