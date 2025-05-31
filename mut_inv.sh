@@ -427,7 +427,6 @@ filter_hosts()
       */*)
          # Directory specified
          csv_dir=$(dirname "$csv_file")
-         csv_name=$(basename "$csv_file")
          if [ ! -d "$csv_dir" ]
          then
             log_msg "ERROR: Directory $csv_dir does not exist"
@@ -438,7 +437,6 @@ filter_hosts()
       *)
          # No directory, default to $HOME
          csv_path="$HOME/$csv_file"
-         csv_name="$csv_file"
          ;;
    esac
    if [ ! -f "$csv_path" ]
