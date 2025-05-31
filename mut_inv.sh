@@ -526,7 +526,7 @@ run_upgrade()
       fi
    fi
    # Build expect command
-   expect_cmd="expect -f \"$EXPECT_SCRIPT\""
+   expect_cmd="expect -f \"$EXPECT_SCRIPT\" --"
    if [ "$TEST_MODE" -eq 1 ]
    then
       expect_cmd="$expect_cmd -t"
