@@ -397,10 +397,10 @@ build_inventory()
    host="$1"
    csv_file="$2"
    log_msg "Building inventory for $host"
-   raw_data=$(ssh_exec "$host" ":put [/ip neighbor print as-value]")
+   raw_data=$(ssh_exec "$host" ":put [/ip/neighbor/print as-value]")
    if [ -z "$raw_data" ]
    then
-      log_msg "ERROR: Empty output from :put [/ip neighbor print as-value]"
+      log_msg "ERROR: Empty output from :put [/ip/neighbor/print as-value]"
       exit 1
    fi
    log_msg "Parsing neighbor data"
