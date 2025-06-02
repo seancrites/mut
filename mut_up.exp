@@ -215,11 +215,11 @@ proc compare_versions {v1 v2} {
    return 0
 }
 
-# Select RouterOS version and return .npk file path
-proc select_ros_version {version arch ros_image_dir} {
+# Select RouterOS version and return .npk file paths for main and addon packages
+proc select_ros_version {version arch ros_image_dir addon_packages} {
    global debug_mode
    set major_minor ""
-   set npk_file ""
+   set npk_files {}
    set selected_version ""
    # Validate version format (N.NN or N.NN.N)
    if {[regexp {^[0-9]\.[0-9][0-9]$} $version]} {
@@ -236,43 +236,61 @@ proc select_ros_version {version arch ros_image_dir} {
       log_msg "ERROR: Directory $version_dir does not exist"
       exit 1
    }
-   # Handle N.NN (find highest fix)
+   # Handle main routeros package
    if {[regexp {^[0-9]\.[0-9][0-9]$} $version]} {
       set pattern "$version_dir/routeros-$version*[0-9]-$arch.npk"
-      debug_log "Searching for highest version with pattern: $pattern"
+      debug_log "Searching for highest routeros version with pattern: $pattern"
       set files [glob -nocomplain $pattern]
       if {$files == ""} {
          log_msg "ERROR: No RouterOS version found in $version_dir for architecture $arch"
          exit 1
       }
-      set npk_file ""
+      set routeros_file ""
       set latest_version "0.0.0"
       foreach file $files {
          if {[regexp "routeros-(\[0-9]\.\[0-9][0-9]\.\[0-9])-.*\.npk$" $file {} ver]} {
             if {[compare_versions $ver $latest_version] > 0} {
                set latest_version $ver
-               set npk_file $file
+               set routeros_file $file
             }
          }
       }
-      if {$npk_file == ""} {
+      if {$routeros_file == ""} {
          log_msg "ERROR: No valid RouterOS version found in $version_dir for architecture $arch"
          exit 1
       }
       set selected_version $latest_version
-      log_msg "Selected highest version: $selected_version for $arch ($npk_file)"
+      lappend npk_files $routeros_file
+      log_msg "Selected highest routeros version: $selected_version for $arch ($routeros_file)"
    } else {
-      # Handle N.NN.N (exact match)
-      set npk_file "$version_dir/routeros-$version-$arch.npk"
-      debug_log "Checking for exact version file: $npk_file"
-      if {![file exists $npk_file]} {
+      set routeros_file "$version_dir/routeros-$version-$arch.npk"
+      debug_log "Checking for exact routeros version file: $routeros_file"
+      if {![file exists $routeros_file]} {
          log_msg "ERROR: Version $version not available for architecture $arch in $version_dir"
          exit 1
       }
       set selected_version $version
-      log_msg "Selected exact version: $selected_version for $arch ($npk_file)"
+      lappend npk_files $routeros_file
+      log_msg "Selected exact routeros version: $selected_version for $arch ($routeros_file)"
    }
-   return [list $npk_file $selected_version]
+   # Handle addon packages
+   set missing_packages {}
+   foreach pkg $addon_packages {
+      set pkg_file "$version_dir/$pkg-$selected_version-$arch.npk"
+      debug_log "Checking for addon package file: $pkg_file"
+      if {[file exists $pkg_file]} {
+         lappend npk_files $pkg_file
+         log_msg "Selected addon package: $pkg-$selected_version for $arch ($pkg_file)"
+      } else {
+         lappend missing_packages $pkg
+         debug_log "Addon package $pkg-$selected_version-$arch.npk not found"
+      }
+   }
+   if {[llength $missing_packages] > 0} {
+      log_msg "WARNING: Update unsuccessful due to missing v$selected_version for $arch, packages: [join $missing_packages ", "]"
+      exit 1
+   }
+   return [list $npk_files $selected_version]
 }
 
 # Perform pre-flight checks
