@@ -882,9 +882,32 @@ expect {
    }
 }
 
-# Find appropriate .npk file
-log_msg "Searching for .npk file in $ros_image_dir for architecture $arch"
-set npk_file ""
+# Check for addon packages
+log_msg "Checking for addon packages"
+send_cmd ":put \[/system/package/print as-value\]"
+after 1000
+expect {
+   -re $prompt {
+      set addon_packages [parse_packages $expect_out(buffer) ":put \[/system/package/print as-value\]" $debug_mode]
+      if {[llength $addon_packages] > 0} {
+         log_msg "Found addon packages: [join $addon_packages ", "]"
+      } else {
+         log_msg "No addon packages found"
+      }
+   }
+   eof {
+      log_msg "ERROR: SSH session lost during package query"
+      exit 1
+   }
+   timeout {
+      log_msg "ERROR: Timeout waiting for package response"
+      exit 1
+   }
+}
+
+# Find appropriate .npk files
+log_msg "Searching for .npk files in $ros_image_dir for architecture $arch"
+set npk_files {}
 set npk_version ""
 if {$target_version != ""} {
    set result [select_ros_version $target_version $arch $ros_image_dir]
