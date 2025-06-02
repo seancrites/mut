@@ -3,7 +3,7 @@
 # Script: mut_up.exp
 # Purpose: Automates MikroTik RouterOS upgrades via SSH, with optional test mode and version specification
 # Author: Sean Crites
-# Version: 1.0.18
+# Version: 1.0.19
 # Created: 2025-05-18
 # Last Updated: 2025-06-02
 #
