@@ -17,6 +17,7 @@
 #    - sshpass (version 1.06 or later)
 #    - Expect (version 5.45 or later) for mut_up.exp
 #    - Standard POSIX utilities: awk (mawk or gawk), sed, read, stty, cat
+#    - ping for host reachability checks
 #    - SSH access to MikroTik devices (port 22, admin privileges)
 #    - Write permissions for CSV output ($HOME for CSV, BACKUP_DIR, LOGS_DIR)
 #    - Optional: Configuration file (mut_opt.conf)
@@ -24,6 +25,7 @@
 #    - Warnings:
 #        - "WARNING: No valid neighbors found in output" for empty neighbor data
 #        - "WARNING: No hosts match filter criteria (routable IPv4 or IPv6)" for no routable IPs
+#        - "WARNING: Host <host> is not reachable, skipping upgrade" for unreachable hosts
 #
 # Usage: mut_inv.sh [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-t] [-l] [-o options_file] [<host>]
 # Notes:
@@ -36,6 +38,7 @@
 #    - Test mode (-t) simulates upgrades using -t flag in mut_up.exp.
 #    - Debug mode (-d) enables debug output and passes -d to mut_up.exp.
 #    - Log mode (-l) enables logging to LOGS_DIR and displays output to user.
+#    - Non-POSIX utilities: ssh, sshpass, expect, ping
 #
 
 # --- Default Configuration Variables ---
@@ -90,10 +93,24 @@ log_msg()
    fi
 }
 
+check_host_reachable()
+{
+   host="$1"
+   # Use ping with 2 attempts and a 2-second timeout per attempt
+   ping -c 2 -W 2 "$host" >/dev/null 2>&1
+   if [ $? -eq 0 ]; then
+      [ "$DEBUG" -eq 1 ] && log_msg "Debug: Host $host is reachable"
+      return 0
+   else
+      log_msg "WARNING: Host $host is not reachable, skipping upgrade"
+      return 1
+   fi
+}
+
 # Perform pre-flight checks
 preflight_checks()
 {
-   for cmd in awk sed ssh sshpass expect read stty cat
+   for cmd in awk sed ssh sshpass expect read stty cat ping
    do
       if ! command -v "$cmd" >/dev/null 2>&1
       then
@@ -107,10 +124,12 @@ preflight_checks()
       sshpass_version=$(sshpass -V 2>&1 | grep -o '[0-9]\.[0-9]\+' || echo "unknown")
       expect_version=$(expect -v 2>&1 | grep -o '[0-9]\.[0-9]\+' || echo "unknown")
       awk_version=$(awk -W version 2>&1 | head -n 1 || awk --version 2>&1 | head -n 1 || echo "unknown")
+      ping_version=$(ping -V 2>&1 | head -n 1 || echo "unknown")
       log_msg "Pre-flight: SSH version: $ssh_version"
       log_msg "Pre-flight: sshpass version: $sshpass_version"
       log_msg "Pre-flight: Expect version: $expect_version"
       log_msg "Pre-flight: awk version: $awk_version"
+      log_msg "Pre-flight: ping version: $ping_version"
    fi
    if [ ! -d "$ROS_IMAGE_DIR" ]
    then
@@ -505,6 +524,12 @@ run_upgrade()
 {
    host="$1"
    log_msg "Starting Upgrade Process on $host"
+   # Check if host is reachable
+   check_host_reachable "$host"
+   if [ $? -ne 0 ]; then
+      log_msg ""
+      return 0
+   fi
    log_msg "Running upgrade on $host"
    # Build expect command
    expect_cmd="expect -f \"$EXPECT_SCRIPT\" --"
