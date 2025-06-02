@@ -182,10 +182,27 @@ proc parse_packages {buffer cmd debug_mode} {
          continue
       }
       if {$capture && $entry != "" && ![regexp {\[.*\] >} $entry]} {
-         set package_info [parse_system_output $entry]
-         if {[dict exists $package_info name] && [dict get $package_info name] != "routeros"} {
-            lappend packages [dict get $package_info name]
-            debug_log "Found addon package: [dict get $package_info name]"
+         # Split by .id=* but keep the delimiter in the records
+         set package_records [regexp -all -inline {(\.id=\*[0-9]+;[^\.]*)} $entry]
+         debug_log "Found [llength $package_records] package records"
+         foreach record $package_records {
+            set record [string trim $record]
+            debug_log "Parsing package record: '$record'"
+            if {$record != ""} {
+               set package_info [parse_system_output $record]
+               debug_log "Parsed package info: '$package_info'"
+               if {[dict exists $package_info name] && [dict get $package_info name] != ""} {
+                  set package_name [dict get $package_info name]
+                  if {$package_name != "routeros"} {
+                     lappend packages $package_name
+                     debug_log "Found addon package: $package_name"
+                  } else {
+                     debug_log "Skipping routeros package"
+                  }
+               } else {
+                  debug_log "Skipping invalid record: no name key or empty name"
+               }
+            }
          }
       }
    }
