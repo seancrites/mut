@@ -646,9 +646,9 @@ if {$debug_mode} {
 # Run pre-flight checks
 preflight_checks $backup_dir $ros_image_dir $logging $logs_dir
 
-# Strip .example.com from host for prompt matching
-set host [regsub {\.example\.com$} $host_cli ""]
-debug_log "Original host: '$host_cli', Stripped host: '$host'"
+# Parse host to extract short hostname
+set host [regsub {\.[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+$} $host_cli ""]
+debug_log "Original host: '$host_cli', Short hostname: '$host'"
 
 # Read credentials
 if {![file readable $cred_file]} {
@@ -689,6 +689,7 @@ expect {
       log_user 0
       send "$password\r"
       expect {
+         -timeout 10
          -re {\r\n(?:\r\n)*\s*MMM.*\r\n} {
             exp_continue
          }
@@ -701,16 +702,37 @@ expect {
          -re $prompt {
             log_msg "Logged in to $host"
          }
+         timeout {
+            # Fallback to FQDN prompt
+            set escaped_fqdn [regsub -all {[][\\+*.?{}()^$|]} $host_cli {\\&}]
+            set fqdn_prompt "\\\[.*@${escaped_fqdn}\\\] > \$"
+            debug_log "Retrying with FQDN prompt: $fqdn_prompt"
+            log_msg "Retrying with FQDN prompt: $fqdn_prompt"
+            expect {
+               -re $fqdn_prompt {
+                  log_msg "Logged in to $host_cli using FQDN prompt"
+                  set prompt $fqdn_prompt
+               }
+               "Permission denied" {
+                  log_msg "ERROR: Permission denied for $username@$host. Please check credentials in $cred_file and ensure SSH access is allowed (port 22, firewall settings)."
+                  exit 1
+               }
+               "Login failed" {
+                  log_msg "ERROR: Login failed for $username@$host"
+                  exit 1
+               }
+               timeout {
+                  log_msg "ERROR: Timeout waiting for prompt after password with both short and FQDN prompts"
+                  exit 1
+               }
+            }
+         }
          "Permission denied" {
             log_msg "ERROR: Permission denied for $username@$host. Please check credentials in $cred_file and ensure SSH access is allowed (port 22, firewall settings)."
             exit 1
          }
          "Login failed" {
             log_msg "ERROR: Login failed for $username@$host"
-            exit 1
-         }
-         timeout {
-            log_msg "ERROR: Timeout waiting for prompt after password"
             exit 1
          }
       }
