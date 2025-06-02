@@ -182,11 +182,28 @@ proc parse_packages {buffer cmd debug_mode} {
          continue
       }
       if {$capture && $entry != "" && ![regexp {\[.*\] >} $entry]} {
-         # Split by .id=* but keep the delimiter in the records
-         set package_records [regexp -all -inline {(\.id=\*[0-9]+;[^\.]*)} $entry]
-         debug_log "Found [llength $package_records] package records"
+         # Use regex to capture complete package records starting with .id=*
+         set package_records {}
+         set start 0
+         while {[regexp -start $start -indices {\.id=\*[0-9]+;} $entry match]} {
+            set match_start [lindex $match 0]
+            set match_end [lindex $match 1]
+            # Find the next .id=* or end of string
+            set next_start [expr {$match_end + 1}]
+            if {[regexp -start $next_start -indices {\.id=\*[0-9]+;} $entry next_match]} {
+               set record_end [lindex $next_match 0]
+            } else {
+               set record_end [string length $entry]
+            }
+            # Extract the record
+            set record [string range $entry $match_start $record_end]
+            if {$record != ""} {
+               lappend package_records $record
+            }
+            set start $record_end
+         }
+         debug_log "Found [llength $package_records] package records: [join $package_records ", "]"
          foreach record $package_records {
-            set record [string trim $record]
             debug_log "Parsing package record: '$record'"
             if {$record != ""} {
                set package_info [parse_system_output $record]
@@ -194,8 +211,13 @@ proc parse_packages {buffer cmd debug_mode} {
                if {[dict exists $package_info name] && [dict get $package_info name] != ""} {
                   set package_name [dict get $package_info name]
                   if {$package_name != "routeros"} {
-                     lappend packages $package_name
-                     debug_log "Found addon package: $package_name"
+                     # Deduplicate package names
+                     if {$package_name ni $packages} {
+                        lappend packages $package_name
+                        debug_log "Found addon package: $package_name"
+                     } else {
+                        debug_log "Skipping duplicate addon package: $package_name"
+                     }
                   } else {
                      debug_log "Skipping routeros package"
                   }
