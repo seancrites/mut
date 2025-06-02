@@ -380,7 +380,6 @@ proc check_and_reboot_firmware {host username password prompt max_attempts test_
                         "password:" {
                            log_user 0
                            send "$password\r"
-                           # log_user 1
                            expect {
                               -re $prompt {
                                  log_msg "Reconnected to $host_cli after firmware reboot"
@@ -650,7 +649,6 @@ expect {
    "password:" {
       log_user 0
       send "$password\r"
-      # log_user 1
       expect {
          -re {\r\n(?:\r\n)*\s*MMM.*\r\n} {
             exp_continue
@@ -736,7 +734,6 @@ expect {
                         "password:" {
                            log_user 0
                            send "$password\r"
-                           # log_user 1
                            expect {
                               -re $prompt {
                                  log_msg "Reconnected to $host_cli after firmware reboot"
@@ -973,12 +970,12 @@ if {$test_mode} {
    log_msg "Test mode: Skipping file uploads for [join $npk_files ", "]"
 } else {
    foreach npk_file $npk_files {
-   log_msg "Uploading $npk_file to $host"
-   set scp_cmd "SSHPASS='$password' sshpass -e scp -o StrictHostKeyChecking=no $npk_file $username@$host:/[file tail $npk_file]"
-   if {[catch {exec sh -c $scp_cmd} result]} {
+      log_msg "Uploading $npk_file to $host"
+      set scp_cmd "SSHPASS='$password' sshpass -e scp -o StrictHostKeyChecking=no $npk_file $username@$host:/[file tail $npk_file]"
+      if {[catch {exec sh -c $scp_cmd} result]} {
          log_msg "ERROR: SCP upload failed for $npk_file: $result"
-      exit 1
-   }
+         exit 1
+      }
       log_msg "File upload completed for $npk_file"
    }
 }
@@ -1075,7 +1072,6 @@ while {$attempt < $max_attempts} {
       "password:" {
          log_user 0
          send "$password\r"
-         # log_user 1
          expect {
             -re $prompt {
                log_user 1
@@ -1098,7 +1094,6 @@ while {$attempt < $max_attempts} {
    }
    incr attempt
    log_msg "Attempt $attempt of $max_attempts: Still waiting for $host"
-
 }
 
 if {$attempt >= $max_attempts} {
@@ -1151,7 +1146,6 @@ expect {
                         "password:" {
                            log_user 0
                            send "$password\r"
-                           # log_user 1
                            expect {
                               -re $prompt {
                                  log_user 1
@@ -1170,7 +1164,6 @@ expect {
                            log_user 1
                            log_msg "Attempt [expr {$attempt + 1}] of $max_attempts: Still waiting for $host"
                            log_user 0
-
                         }
                      }
                      incr attempt
