@@ -647,8 +647,13 @@ if {$debug_mode} {
 preflight_checks $backup_dir $ros_image_dir $logging $logs_dir
 
 # Parse host to extract short hostname
-set host [regsub {\.[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+$} $host_cli ""]
-debug_log "Original host: '$host_cli', Short hostname: '$host'"
+if {[regexp {\.(com|org|net|int|edu|gov|mil|biz|info|co\.uk|org\.uk|gov\.uk)$} $host_cli]} {
+   set host [regsub {\.[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+$|\.[a-zA-Z0-9-]+\.co\.uk$|\.[a-zA-Z0-9-]+\.org\.uk$|\.[a-zA-Z0-9-]+\.gov\.uk$} $host_cli ""]
+   debug_log "Original host: '$host_cli', Short hostname: '$host' (domain suffix stripped)"
+} else {
+   set host $host_cli
+   debug_log "Original host: '$host_cli', Short hostname: '$host' (no domain suffix detected)"
+}
 
 # Read credentials
 if {![file readable $cred_file]} {
