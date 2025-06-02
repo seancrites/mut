@@ -3,9 +3,9 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.0.3
+# Version: 1.0.4
 # Created: 2025-05-18
-# Last Updated: 2025-05-31
+# Last Updated: 2025-06-02
 #
 # Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
 # This script is licensed under the BSD 3-Clause License.
@@ -504,6 +504,7 @@ confirm_upgrades()
 run_upgrade()
 {
    host="$1"
+   log_msg "Starting Upgrade Process on $host"
    log_msg "Running upgrade on $host"
    # Build expect command
    expect_cmd="expect -f \"$EXPECT_SCRIPT\" --"
@@ -542,14 +543,15 @@ run_upgrade()
    then
       if [ "$TEST_MODE" -eq 1 ]
       then
-         log_msg "Test mode: Simulated upgrade successful for $host"
+         log_msg "Firmware update successful for $host (simulated)"
       else
-         log_msg "Upgrade successful for $host"
+         log_msg "Firmware update successful for $host"
       fi
    else
-      log_msg "ERROR: Upgrade failed for $host (exit code: $status)"
+      log_msg "Firmware update failed for $host (exit code: $status)"
       exit 1
    fi
+   log_msg ""
 }
 
 # Main function
