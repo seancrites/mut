@@ -19,7 +19,7 @@
 #    - Standard POSIX utilities: awk (mawk or gawk), sed, read, stty, cat
 #    - ping for host reachability checks
 #    - SSH access to MikroTik devices (port 22, admin privileges)
-#    - Write permissions for CSV output ($HOME for CSV, BACKUP_DIR, LOGS_DIR)
+#    - Write permissions for CSV output (current directory or $HOME, BACKUP_DIR, LOGS_DIR)
 #    - Optional: Configuration file (mut_opt.conf)
 #    - Environment: Linux or UNIX-like system
 #    - Warnings:
@@ -29,10 +29,10 @@
 #
 # Usage: mut_inv.sh [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-t] [-l] [-o options_file] [<host>]
 # Notes:
-#    - Build mode (-b): Builds CSV from <host> neighbor data. Requires -c csv_file to write to $HOME/csv_file, else outputs to console.
+#    - Build mode (-b): Builds CSV from <host> neighbor data. With -c csv_file, saves to specified path or current directory if writable, else $HOME; without -c, outputs to console.
 #    - Upgrade mode (-u):
 #        - Without -c: Upgrades <host> directly (no CSV, <host> required).
-#        - With -c: Upgrades hosts from existing csv_file (in $HOME or specified path) matching -f filter (no <host>, -f required).
+#        - With -c: Upgrades hosts from existing csv_file (at specified path, current directory, or $HOME) matching -f filter (no <host>, -f required).
 #    - Filter (-f) matches model_name first, then identity (alphanumeric, case-insensitive).
 #    - Version (-r version): Specifies RouterOS version (N.NN or N.NN.N). N.NN selects highest fix in os/vN.NN; N.NN.N selects exact version.
 #    - Test mode (-t) simulates upgrades using -t flag in mut_up.exp.
@@ -66,7 +66,7 @@ usage()
    echo "Options:"
    echo "   -b             Build inventory CSV (no upgrades)"
    echo "   -u             Upgrade mode: upgrade host or filtered CSV hosts"
-   echo "   -c csv_file    Write CSV to $HOME/csv_file and suppress console output (build mode) or read existing CSV (upgrade mode)"
+   echo "   -c csv_file    Write CSV to specified path, current directory if writable, or $HOME (build mode); read existing CSV from same locations (upgrade mode)"
    echo "   -d             Enable debug output and pass to expect script"
    echo "   -t             Enable test mode (simulates upgrades using -t in expect script)"
    echo "   -l             Enable logging to LOGS_DIR and display output"
@@ -427,8 +427,38 @@ build_inventory()
    log_msg "Parsing neighbor data"
    if [ "$SUPPRESS_CSV" -eq 1 ]
    then
-      # Save to csv_file path
-      csv_path="$HOME/$csv_file"
+      # Resolve CSV path
+      case "$csv_file" in
+         */*)
+            # Path specified
+            csv_path="$csv_file"
+            csv_dir=$(dirname "$csv_path")
+            if [ ! -d "$csv_dir" ]
+            then
+               log_msg "ERROR: Directory $csv_dir does not exist"
+               exit 1
+            fi
+            if [ ! -w "$csv_dir" ]
+            then
+               log_msg "ERROR: Directory $csv_dir is not writable"
+               exit 1
+            fi
+            ;;
+         *)
+            # No path, try current directory, then $HOME
+            csv_path="./$csv_file"
+            if [ ! -w . ]
+            then
+               log_msg "WARNING: Current directory not writable, falling back to $HOME"
+               csv_path="$HOME/$csv_file"
+               if [ ! -w "$HOME" ]
+               then
+                  log_msg "ERROR: $HOME is not writable"
+                  exit 1
+               fi
+            fi
+            ;;
+      esac
       confirm_overwrite "$csv_path"
       parse_neighbors "$raw_data" > "$csv_path"
       log_msg "Inventory saved to $csv_path"
@@ -443,21 +473,26 @@ filter_hosts()
 {
    csv_file="$1"
    filter="$2"
-   # Determine CSV path
+   # Resolve CSV path
    case "$csv_file" in
       */*)
-         # Directory specified
-         csv_dir=$(dirname "$csv_file")
+         # Path specified
+         csv_path="$csv_file"
+         csv_dir=$(dirname "$csv_path")
          if [ ! -d "$csv_dir" ]
          then
             log_msg "ERROR: Directory $csv_dir does not exist"
             exit 1
          fi
-         csv_path="$csv_file"
          ;;
       *)
-         # No directory, default to $HOME
-         csv_path="$HOME/$csv_file"
+         # No path, try current directory, then $HOME
+         csv_path="./$csv_file"
+         if [ ! -f "$csv_path" ] || [ ! -r "$csv_path" ] || [ ! -w "$csv_path" ]
+         then
+            log_msg "WARNING: CSV $csv_path not found or not readable/writable, trying $HOME"
+            csv_path="$HOME/$csv_file"
+         fi
          ;;
    esac
    if [ ! -f "$csv_path" ]
@@ -468,6 +503,11 @@ filter_hosts()
    if [ ! -r "$csv_path" ]
    then
       log_msg "ERROR: CSV file $csv_path is not readable"
+      exit 1
+   fi
+   if [ ! -w "$csv_path" ]
+   then
+      log_msg "ERROR: CSV file $csv_path is not writable"
       exit 1
    fi
    tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
