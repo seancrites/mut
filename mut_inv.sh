@@ -3,7 +3,7 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.0.6
+# Version: 1.1.0
 # Created: 2025-05-18
 # Last Updated: 2025-06-03
 #
@@ -93,12 +93,14 @@ log_msg()
    fi
 }
 
+# Check if host is reachable
 check_host_reachable()
 {
    host="$1"
    # Use ping with 2 attempts and a 2-second timeout per attempt
    ping -c 2 -W 2 "$host" >/dev/null 2>&1
-   if [ $? -eq 0 ]; then
+   if [ $? -eq 0 ]
+   then
       [ "$DEBUG" -eq 1 ] && log_msg "Debug: Host $host is reachable"
       return 0
    else
@@ -425,7 +427,7 @@ build_inventory()
    log_msg "Parsing neighbor data"
    if [ "$SUPPRESS_CSV" -eq 1 ]
    then
-      # Save to $HOME/csv_file
+      # Save to csv_file path
       csv_path="$HOME/$csv_file"
       confirm_overwrite "$csv_path"
       parse_neighbors "$raw_data" > "$csv_path"
@@ -498,7 +500,7 @@ filter_hosts()
    do
       log_msg "  Identity: $identity, Model: $model_name"
    done < "$tmp_hosts"
-   echo "$tmp_hosts"
+   echo "$tmp_hosts,$csv_path"
 }
 
 # Confirm upgrades
@@ -523,12 +525,41 @@ confirm_upgrades()
 run_upgrade()
 {
    host="$1"
+   csv_path="$2"
    log_msg "Starting Upgrade Process on $host"
    # Check if host is reachable
    check_host_reachable "$host"
-   if [ $? -ne 0 ]; then
+   if [ $? -ne 0 ]
+   then
+      # Update CSV if provided and not in test mode
+      if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
+      then
+         if [ -f "$csv_path" ]
+         then
+            tmp_csv="/tmp/mikrotik_csv_$$.csv"
+            timestamp=$(date '+%Y-%m-%d %H:%M:%S %z')
+            awk -F',' -v host="\"$host\"" -v status="\"FAILED: Ping Fail $timestamp\"" -v OFS=',' '
+               $1 == host {$8 = status; print $0}
+               $1 != host {print $0}
+            ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+            log_msg "Updated CSV $csv_path: $host marked as FAILED"
+         fi
+      fi
       log_msg ""
       return 0
+   fi
+   # Update CSV to PENDING if provided and not in test mode
+   if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
+   then
+      if [ -f "$csv_path" ]
+      then
+         tmp_csv="/tmp/mikrotik_csv_$$.csv"
+         awk -F',' -v host="\"$host\"" -v status="\"PENDING\"" -v OFS=',' '
+            $1 == host {$8 = status; print $0}
+            $1 != host {print $0}
+         ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+         log_msg "Updated CSV $csv_path: $host marked as PENDING"
+      fi
    fi
    log_msg "Running upgrade on $host"
    # Build expect command
@@ -563,6 +594,31 @@ run_upgrade()
       eval "$expect_cmd"
       status=$?
    fi
+   # Update CSV based on upgrade result if provided and not in test mode
+   if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
+   then
+      if [ -f "$csv_path" ]
+      then
+         tmp_csv="/tmp/mikrotik_csv_$$.csv"
+         timestamp=$(date '+%Y-%m-%d %H:%M:%S %z')
+         if [ $status -eq 0 ]
+         then
+            new_status="\"SUCCESS: Updated to v$ROS_VERSION $timestamp\""
+            awk -F',' -v host="\"$host\"" -v status="$new_status" -v ver="\"$ROS_VERSION\"" -v OFS=',' '
+               $1 == host {$7 = ver; $8 = status; print $0}
+               $1 != host {print $0}
+            ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+            log_msg "Updated CSV $csv_path: $host marked as SUCCESS"
+         else
+            new_status="\"FAILED: Updating to v$ROS_VERSION $timestamp\""
+            awk -F',' -v host="\"$host\"" -v status="$new_status" -v OFS=',' '
+               $1 == host {$8 = status; print $0}
+               $1 != host {print $0}
+            ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+            log_msg "Updated CSV $csv_path: $host marked as FAILED"
+         fi
+      fi
+   fi
    rm -f "$CRED_FILE"
    if [ $status -eq 0 ]
    then
@@ -573,7 +629,7 @@ run_upgrade()
          log_msg "Firmware update successful for $host"
       fi
    else
-      log_msg "Firmware update failed for $host (exit code: $status)"
+      log_msg "Firmware update failed for $host ($status)"
       exit 1
    fi
    log_msg ""
@@ -710,22 +766,24 @@ main()
          if [ "$SUPPRESS_CSV" -eq 1 ]
          then
             log_msg "Reading inventory from $csv_file"
-            hosts_file=$(filter_hosts "$csv_file" "$FILTER")
+            hosts_info=$(filter_hosts "$csv_file" "$FILTER")
+            hosts_file=$(echo "$hosts_info" | cut -d',' -f1)
+            csv_path=$(echo "$hosts_info" | cut -d',' -f2)
             confirm_upgrades "$hosts_file"
             # Prompt for credentials only after confirmation
             prompt_credentials
-            log_msg "Processing upgrades for filtered hosts in $csv_file"
+            log_msg "Processing upgrades for filtered hosts in $csv_path"
             while IFS=',' read -r target_host model_name
             do
                prompt_credentials
-               run_upgrade "$target_host"
+               run_upgrade "$target_host" "$csv_path"
             done < "$hosts_file"
             rm -f "$hosts_file"
          else
             # Direct upgrade requires credentials immediately
             prompt_credentials
             log_msg "Upgrading host $host"
-            run_upgrade "$host"
+            run_upgrade "$host" ""
          fi
          ;;
       *)
