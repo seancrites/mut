@@ -329,16 +329,16 @@ parse_neighbors()
    if [ -z "$raw_data" ] || ! echo "$raw_data" | grep -q '.id='
    then
       log_msg "WARNING: No valid neighbors found in output"
-      echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,status"
+      echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
       return
    fi
    tmp_output="/tmp/mikrotik_neighbors_$$.csv"
    echo "$raw_data" | awk -v debug="$DEBUG" '
       BEGIN {
          RS=";"; FS="="; OFS=",";
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; status=""
+         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
          count=0
-         print "identity,ip_addr,mac_addr,interface,platform,model_name,version,status"
+         print "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
       }
       /.id=/ {
          if (identity != "" && ip_addr != "") {
@@ -351,10 +351,10 @@ parse_neighbors()
                platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
                model_esc=model; gsub(/"/, "\"\"", model_esc)
                version_esc=version; gsub(/"/, "\"\"", version_esc)
-               status_esc=status; gsub(/"/, "\"\"", status_esc)
+               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
                printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                       identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, status_esc
+                      platform_esc, model_esc, version_esc, mut_status_esc
                if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
                count++
             } else {
@@ -363,7 +363,7 @@ parse_neighbors()
          } else if (identity != "") {
             if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
          }
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; status=""
+         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
       }
       /^address=/ { ip_addr=$2; if (debug) print "Debug: Set ip_addr=" ip_addr > "/dev/stderr" }
       /^mac-address=/ { mac_addr=$2; if (debug) print "Debug: Set mac_addr=" mac_addr > "/dev/stderr" }
@@ -385,10 +385,10 @@ parse_neighbors()
                platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
                model_esc=model; gsub(/"/, "\"\"", model_esc)
                version_esc=version; gsub(/"/, "\"\"", version_esc)
-               status_esc=status; gsub(/"/, "\"\"", status_esc)
+               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
                printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                       identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, status_esc
+                      platform_esc, model_esc, version_esc, mut_status_esc
                if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
                count++
             } else {
