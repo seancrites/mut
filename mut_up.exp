@@ -3,7 +3,7 @@
 # Script: mut_up.exp
 # Purpose: Automates MikroTik RouterOS upgrades via SSH, with optional test mode and version specification
 # Author: Sean Crites
-# Version: 1.0.20
+# Version: 1.0.21
 # Created: 2025-05-18
 # Last Updated: 2025-06-04
 #
@@ -115,7 +115,6 @@ proc fail_with_error {msg code} {
    if {$debug_mode && [info exists debug_file_handle]} {
       debug_log "Exiting with error: $msg (code $code)"
    }
-   puts stderr "$msg"
    # Close file handles after all logging is complete
    if {$logging && [info exists log_file_handle]} {
       catch {close $log_file_handle}
@@ -377,6 +376,7 @@ proc preflight_checks {backup_dir ros_image_dir logging logs_dir} {
          log_msg "Pre-flight: Found $cmd at [exec which $cmd]"
       }
    }
+   # log_msg ""
    log_msg "Pre-flight checks passed"
 }
 
