@@ -3,9 +3,9 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.0.5
+# Version: 1.1.5
 # Created: 2025-05-18
-# Last Updated: 2025-06-02
+# Last Updated: 2025-06-04
 #
 # Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
 # This script is licensed under the BSD 3-Clause License.
@@ -19,7 +19,7 @@
 #    - Standard POSIX utilities: awk (mawk or gawk), sed, read, stty, cat
 #    - ping for host reachability checks
 #    - SSH access to MikroTik devices (port 22, admin privileges)
-#    - Write permissions for CSV output ($HOME for CSV, BACKUP_DIR, LOGS_DIR)
+#    - Write permissions for CSV output (current directory or $HOME, BACKUP_DIR, LOGS_DIR)
 #    - Optional: Configuration file (mut_opt.conf)
 #    - Environment: Linux or UNIX-like system
 #    - Warnings:
@@ -29,10 +29,10 @@
 #
 # Usage: mut_inv.sh [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-t] [-l] [-o options_file] [<host>]
 # Notes:
-#    - Build mode (-b): Builds CSV from <host> neighbor data. Requires -c csv_file to write to $HOME/csv_file, else outputs to console.
+#    - Build mode (-b): Builds CSV from <host> neighbor data. With -c csv_file, saves to specified path or current directory if writable, else $HOME; without -c, outputs to console.
 #    - Upgrade mode (-u):
 #        - Without -c: Upgrades <host> directly (no CSV, <host> required).
-#        - With -c: Upgrades hosts from existing csv_file (in $HOME or specified path) matching -f filter (no <host>, -f required).
+#        - With -c: Upgrades hosts from existing csv_file (at specified path, current directory, or $HOME) matching -f filter (no <host>, -f required).
 #    - Filter (-f) matches model_name first, then identity (alphanumeric, case-insensitive).
 #    - Version (-r version): Specifies RouterOS version (N.NN or N.NN.N). N.NN selects highest fix in os/vN.NN; N.NN.N selects exact version.
 #    - Test mode (-t) simulates upgrades using -t flag in mut_up.exp.
@@ -50,6 +50,7 @@ EXPECT_SCRIPT="$SCRIPT_DIR/mut_up.exp"
 SSH_TIMEOUT=30
 USERNAME=""
 PASSWORD=""
+MTIK_CLI="+tce200w"
 DEBUG=0
 SUPPRESS_CSV=0
 TEST_MODE=0
@@ -66,7 +67,7 @@ usage()
    echo "Options:"
    echo "   -b             Build inventory CSV (no upgrades)"
    echo "   -u             Upgrade mode: upgrade host or filtered CSV hosts"
-   echo "   -c csv_file    Write CSV to $HOME/csv_file and suppress console output (build mode) or read existing CSV (upgrade mode)"
+   echo "   -c csv_file    Write CSV to specified path, current directory if writable, or $HOME (build mode); read existing CSV from same locations (upgrade mode)"
    echo "   -d             Enable debug output and pass to expect script"
    echo "   -t             Enable test mode (simulates upgrades using -t in expect script)"
    echo "   -l             Enable logging to LOGS_DIR and display output"
@@ -93,12 +94,14 @@ log_msg()
    fi
 }
 
+# Check if host is reachable
 check_host_reachable()
 {
    host="$1"
    # Use ping with 2 attempts and a 2-second timeout per attempt
    ping -c 2 -W 2 "$host" >/dev/null 2>&1
-   if [ $? -eq 0 ]; then
+   if [ $? -eq 0 ]
+   then
       [ "$DEBUG" -eq 1 ] && log_msg "Debug: Host $host is reachable"
       return 0
    else
@@ -229,7 +232,7 @@ prompt_credentials()
       log_msg "ERROR: Username cannot be empty"
       exit 1
    fi
-   USERNAME="${USERNAME}+tce200w"
+   USERNAME_MTIK="${USERNAME}${MTIK_CLI}"
    printf "Enter MikroTik password: "
    # Check if stdin is a terminal before using stty
    if [ -t 0 ]
@@ -249,7 +252,7 @@ prompt_credentials()
       exit 1
    fi
    CRED_FILE="/tmp/mikrotik_cred_$$.txt"
-   echo "username=$USERNAME" > "$CRED_FILE"
+   echo "username=$USERNAME_MTIK" > "$CRED_FILE"
    echo "password=$PASSWORD" >> "$CRED_FILE"
    chmod 600 "$CRED_FILE"
 }
@@ -317,7 +320,7 @@ ssh_exec()
    SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME@$host" "$cmd" 2>/dev/null
    if [ $? -ne 0 ]
    then
-      log_msg "ERROR: SSH command failed on $USERNAME@$host"
+      log_msg "ERROR: SSH command failed on $USERNAME_MTIK@$host"
       exit 1
    fi
 }
@@ -329,16 +332,16 @@ parse_neighbors()
    if [ -z "$raw_data" ] || ! echo "$raw_data" | grep -q '.id='
    then
       log_msg "WARNING: No valid neighbors found in output"
-      echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,status"
+      echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
       return
    fi
    tmp_output="/tmp/mikrotik_neighbors_$$.csv"
    echo "$raw_data" | awk -v debug="$DEBUG" '
       BEGIN {
          RS=";"; FS="="; OFS=",";
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; status=""
+         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
          count=0
-         print "identity,ip_addr,mac_addr,interface,platform,model_name,version,status"
+         print "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
       }
       /.id=/ {
          if (identity != "" && ip_addr != "") {
@@ -351,10 +354,10 @@ parse_neighbors()
                platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
                model_esc=model; gsub(/"/, "\"\"", model_esc)
                version_esc=version; gsub(/"/, "\"\"", version_esc)
-               status_esc=status; gsub(/"/, "\"\"", status_esc)
+               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
                printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                       identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, status_esc
+                      platform_esc, model_esc, version_esc, mut_status_esc
                if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
                count++
             } else {
@@ -363,7 +366,7 @@ parse_neighbors()
          } else if (identity != "") {
             if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
          }
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; status=""
+         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
       }
       /^address=/ { ip_addr=$2; if (debug) print "Debug: Set ip_addr=" ip_addr > "/dev/stderr" }
       /^mac-address=/ { mac_addr=$2; if (debug) print "Debug: Set mac_addr=" mac_addr > "/dev/stderr" }
@@ -385,10 +388,10 @@ parse_neighbors()
                platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
                model_esc=model; gsub(/"/, "\"\"", model_esc)
                version_esc=version; gsub(/"/, "\"\"", version_esc)
-               status_esc=status; gsub(/"/, "\"\"", status_esc)
+               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
                printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                       identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, status_esc
+                      platform_esc, model_esc, version_esc, mut_status_esc
                if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
                count++
             } else {
@@ -425,8 +428,38 @@ build_inventory()
    log_msg "Parsing neighbor data"
    if [ "$SUPPRESS_CSV" -eq 1 ]
    then
-      # Save to $HOME/csv_file
-      csv_path="$HOME/$csv_file"
+      # Resolve CSV path
+      case "$csv_file" in
+         */*)
+            # Path specified
+            csv_path="$csv_file"
+            csv_dir=$(dirname "$csv_path")
+            if [ ! -d "$csv_dir" ]
+            then
+               log_msg "ERROR: Directory $csv_dir does not exist"
+               exit 1
+            fi
+            if [ ! -w "$csv_dir" ]
+            then
+               log_msg "ERROR: Directory $csv_dir is not writable"
+               exit 1
+            fi
+            ;;
+         *)
+            # No path, try current directory, then $HOME
+            csv_path="./$csv_file"
+            if [ ! -w . ]
+            then
+               log_msg "WARNING: Current directory not writable, falling back to $HOME"
+               csv_path="$HOME/$csv_file"
+               if [ ! -w "$HOME" ]
+               then
+                  log_msg "ERROR: $HOME is not writable"
+                  exit 1
+               fi
+            fi
+            ;;
+      esac
       confirm_overwrite "$csv_path"
       parse_neighbors "$raw_data" > "$csv_path"
       log_msg "Inventory saved to $csv_path"
@@ -441,64 +474,74 @@ filter_hosts()
 {
    csv_file="$1"
    filter="$2"
-   # Determine CSV path
+   # Resolve CSV path
    case "$csv_file" in
       */*)
-         # Directory specified
-         csv_dir=$(dirname "$csv_file")
+         # Path specified
+         csv_path="$csv_file"
+         csv_dir=$(dirname "$csv_path")
          if [ ! -d "$csv_dir" ]
          then
             log_msg "ERROR: Directory $csv_dir does not exist"
             exit 1
          fi
-         csv_path="$csv_file"
          ;;
       *)
-         # No directory, default to $HOME
-         csv_path="$HOME/$csv_file"
+         # No path, try current directory, then $HOME
+         csv_path="./$csv_file"
+         if [ ! -f "$csv_path" ] || [ ! -r "$csv_path" ] || [ ! -w "$csv_path" ]
+         then
+            log_msg "WARNING: CSV $csv_path not found or not readable/writable, trying $HOME"
+            csv_path="$HOME/$csv_file"
+         fi
          ;;
-   esac
-   if [ ! -f "$csv_path" ]
-   then
-      log_msg "ERROR: CSV file $csv_path does not exist"
-      exit 1
-   fi
-   if [ ! -r "$csv_path" ]
-   then
-      log_msg "ERROR: CSV file $csv_path is not readable"
-      exit 1
-   fi
-   tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
-   awk -F',' -v filter="$filter" '
-      BEGIN {
-         OFS=","; count=0
-      }
-      NR==1 { next }
-      {
-         model_name=tolower(gsub(/^"|"$/,"",$6))
-         identity=tolower(gsub(/^"|"$/,"",$1))
-         if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
-            print $1,$6; count++
+      esac
+      if [ ! -f "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path does not exist"
+         exit 1
+      fi
+      if [ ! -r "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path is not readable"
+         exit 1
+      fi
+      if [ ! -w "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path is not writable"
+         exit 1
+      fi
+      tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
+      awk -F',' -v filter="$filter" '
+         BEGIN {
+            OFS=","; count=0
          }
-      }
-      END {
-         if (count == 0) {
-            print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
+         NR==1 { next }
+         {
+            model_name=tolower(gsub(/^"|"$/,"",$6))
+            identity=tolower(gsub(/^"|"$/,"",$1))
+            if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
+               print $1,$6; count++
+            }
          }
-      }
-   ' "$csv_path" > "$tmp_hosts"
-   if [ ! -s "$tmp_hosts" ]
-   then
-      log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
-      rm -f "$tmp_hosts"
-      exit 1
-   fi
-   log_msg "Hosts matched by filter '$filter':"
-   while IFS=',' read -r identity model_name
-   do
-      log_msg "  Identity: $identity, Model: $model_name"
-   done < "$tmp_hosts"
-   echo "$tmp_hosts"
+         END {
+            if (count == 0) {
+               print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
+            }
+         }
+      ' "$csv_path" > "$tmp_hosts"
+      if [ ! -s "$tmp_hosts" ]
+      then
+         log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
+         rm -f "$tmp_hosts"
+         exit 1
+      fi
+      log_msg "Hosts matched by filter '$filter':"
+      while IFS=',' read -r identity model_name
+      do
+         log_msg "  Identity: $identity, Model: $model_name"
+      done < "$tmp_hosts"
+      echo "$tmp_hosts,$csv_path"
 }
 
 # Confirm upgrades
@@ -523,12 +566,41 @@ confirm_upgrades()
 run_upgrade()
 {
    host="$1"
+   csv_path="$2"
    log_msg "Starting Upgrade Process on $host"
    # Check if host is reachable
    check_host_reachable "$host"
-   if [ $? -ne 0 ]; then
+   if [ $? -ne 0 ]
+   then
+      # Update CSV if provided and not in test mode
+      if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
+      then
+         if [ -f "$csv_path" ]
+         then
+            tmp_csv="/tmp/mikrotik_csv_$$.csv"
+            timestamp=$(date '+%Y-%m-%d %H:%M:%S %z')
+            awk -F',' -v host="\"$host\"" -v status="\"FAILED: Ping Fail $timestamp\"" -v OFS=',' '
+               $1 == host {$8 = status; print $0}
+               $1 != host {print $0}
+            ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+            log_msg "Updated CSV $csv_path: $host marked as FAILED"
+         fi
+      fi
       log_msg ""
       return 0
+   fi
+   # Update CSV to PENDING if provided and not in test mode
+   if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
+   then
+      if [ -f "$csv_path" ]
+      then
+         tmp_csv="/tmp/mikrotik_csv_$$.csv"
+         awk -F',' -v host="\"$host\"" -v status="\"PENDING\"" -v OFS=',' '
+            $1 == host {$8 = status; print $0}
+            $1 != host {print $0}
+         ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+         log_msg "Updated CSV $csv_path: $host marked as PENDING"
+      fi
    fi
    log_msg "Running upgrade on $host"
    # Build expect command
@@ -557,14 +629,57 @@ run_upgrade()
    fi
    if [ "$LOGGING" -eq 1 ]
    then
-      eval "$expect_cmd 2>&1 | tee -a \"$LOG_FILE\""
-      status=$?
+      # Run expect in a subshell, capture exit status, and pipe output to tee
+      (eval "$expect_cmd 2>&1"; echo $? > /tmp/mut_exit_$$.tmp) | tee -a "$LOG_FILE"
+      status=$(cat /tmp/mut_exit_$$.tmp)
+      rm -f /tmp/mut_exit_$$.tmp
    else
       eval "$expect_cmd"
       status=$?
    fi
+   # Update CSV based on upgrade result if provided and not in test mode
+   if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
+   then
+      if [ -f "$csv_path" ]
+      then
+         tmp_csv="/tmp/mikrotik_csv_$$.csv"
+         timestamp=$(date '+%Y-%m-%d %H:%M:%S %z')
+         if [ "$status" -eq 0 ]
+         then
+            new_status="\"SUCCESS: Updated to v$ROS_VERSION $timestamp\""
+            awk -F',' -v host="\"$host\"" -v status="$new_status" -v ver="\"$ROS_VERSION\"" -v OFS=',' '
+               $1 == host {$7 = ver; $8 = status; print $0}
+               $1 != host {print $0}
+            ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+            log_msg "Updated CSV $csv_path: $host marked as SUCCESS"
+         else
+            case $status in
+               1)
+                  new_status="\"FAILED: Invalid credentials $timestamp\""
+                  ;;
+               2)
+                  new_status="\"FAILED: SSH timeout $timestamp\""
+                  ;;
+               3)
+                  new_status="\"FAILED: Connection refused $timestamp\""
+                  ;;
+               4)
+                  new_status="\"FAILED: SSH connection failed $timestamp\""
+                  ;;
+               *)
+                  new_status="\"FAILED: Unknown error (code $status) $timestamp\""
+                  ;;
+            esac
+            awk -F',' -v host="\"$host\"" -v status="$new_status" -v OFS=',' '
+               $1 == host {$8 = status; print $0}
+               $1 != host {print $0}
+            ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
+            log_msg "Updated CSV $csv_path: $host marked as FAILED"
+         fi
+      fi
+   fi
    rm -f "$CRED_FILE"
-   if [ $status -eq 0 ]
+   if [ "$status" -eq 0 ]
    then
       if [ "$TEST_MODE" -eq 1 ]
       then
@@ -573,8 +688,9 @@ run_upgrade()
          log_msg "Firmware update successful for $host"
       fi
    else
-      log_msg "Firmware update failed for $host (exit code: $status)"
-      exit 1
+      log_msg "Firmware update failed for $host ($status)"
+      log_msg ""
+      return 1
    fi
    log_msg ""
 }
@@ -710,22 +826,32 @@ main()
          if [ "$SUPPRESS_CSV" -eq 1 ]
          then
             log_msg "Reading inventory from $csv_file"
-            hosts_file=$(filter_hosts "$csv_file" "$FILTER")
+            hosts_info=$(filter_hosts "$csv_file" "$FILTER")
+            hosts_file=$(echo "$hosts_info" | cut -d',' -f1)
+            csv_path=$(echo "$hosts_info" | cut -d',' -f2)
             confirm_upgrades "$hosts_file"
             # Prompt for credentials only after confirmation
             prompt_credentials
-            log_msg "Processing upgrades for filtered hosts in $csv_file"
+            log_msg "Processing upgrades for filtered hosts in $csv_path"
+            failed_hosts=""
             while IFS=',' read -r target_host model_name
             do
                prompt_credentials
-               run_upgrade "$target_host"
+               run_upgrade "$target_host" "$csv_path" || failed_hosts="$failed_hosts $target_host"
             done < "$hosts_file"
             rm -f "$hosts_file"
+            if [ -n "$failed_hosts" ]
+            then
+               log_msg ""
+               log_msg "Summary: Failed upgrades for hosts:$failed_hosts"
+            else
+               log_msg "Summary: All updates were successful."
+            fi
          else
             # Direct upgrade requires credentials immediately
             prompt_credentials
             log_msg "Upgrading host $host"
-            run_upgrade "$host"
+            run_upgrade "$host" ""
          fi
          ;;
       *)
