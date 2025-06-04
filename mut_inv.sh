@@ -323,7 +323,26 @@ confirm_overwrite()
    fi
 }
 
-# Execute SSH command
+# Resolve hostname or IP to IP address for ip_addr field
+resolve_host_to_ip()
+{
+   host="$1"
+   # If host is already an IP (IPv4 or IPv6), return it
+   if echo "$host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$'
+   then
+      echo "$host"
+      return 0
+   fi
+   # Try to resolve hostname using getent (POSIX-compliant, fallback to host command)
+   ip_addr=$(getent ahosts "$host" 2>/dev/null | awk '/^[0-9a-fA-F.:]+/ {print $1; exit}' || host "$host" 2>/dev/null | awk '/has address/ {print $4; exit}')
+   if [ -z "$ip_addr" ]
+   then
+      log_msg "ERROR: Cannot resolve hostname $host to IP address"
+      exit 1
+   fi
+   echo "$ip_addr"
+}
+
 ssh_exec()
 {
    host="$1"
