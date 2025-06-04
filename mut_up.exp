@@ -3,7 +3,7 @@
 # Script: mut_up.exp
 # Purpose: Automates MikroTik RouterOS upgrades via SSH, with optional test mode and version specification
 # Author: Sean Crites
-# Version: 1.0.22
+# Version: 1.0.23
 # Created: 2025-05-18
 # Last Updated: 2025-06-04
 #
@@ -23,17 +23,18 @@
 #    - Write permissions for BACKUP_DIR and LOGS_DIR
 #
 # Usage:
-#   mut_up.exp [-t|--test] [-d|--debug] [-l] [-r version] <host> <backup_dir> <ros_image_dir> <cred_file>
+#   mut_up.exp [-t|--test] [-d|--debug] [-e] [-l] [-r version] <host> <backup_dir> <ros_image_dir> <cred_file>
 # Options:
 #    -t, --test    Test mode: Simulates file upload, auto-update settings, and reboots
 #    -d, --debug   Debug mode: Enables verbose Expect debugging, displays debug details on console, and creates a debug log in LOGS_DIR (independent of -l)
+#    -e            Enhanced logging: Logs MikroTik commands to CLI (with -d, -e is ignored as -d includes command logging)
 #    -l            Log mode: Creates an upgrade log in LOGS_DIR and displays messages to user
 #    -r version    Specify RouterOS version (e.g., 7.17.2 or 7.17) for upgrade or downgrade
 #
 # Notes:
 #    - The -d option generates a debug log (logs/mut_upgrade_debug_*.log) containing all CLI interactions, Expect diagnostics, and upgrade log messages, independent of -l.
 #    - Debug mode (-d) outputs debug details to both the console (stderr for diagnostics, stdout for CLI) and the debug log, with passwords suppressed for security.
-#    - Without -d, console output is limited to upgrade messages and commands (stderr), suppressing MikroTik banner and CLI interactions.
+#    - Without -d or -e, console output is limited to upgrade messages (stderr), suppressing MikroTik commands, banner, and CLI interactions.
 #    - Exit codes:
 #        - 0: Success
 #        - 1: Invalid credentials (Permission denied, Login failed)
@@ -48,15 +49,17 @@ set reboot_initiated 0
 set max_attempts 60
 set early_exit 0
 set mtik_cli "+tce200w"
+set enhanced_logging 0
 
 log_user 0
 
 # Display help message
 if {[lindex $argv 0] == "--help"} {
-   puts "Usage: [info script] \[-t|--test\] \[-d|--debug\] \[-l\] \[-r version\] <host> <backup_dir> <ros_image_dir> <cred_file>"
+   puts "Usage: [info script] \[-t|--test\] \[-d|--debug\] \[-e\] \[-l\] \[-r version\] <host> <backup_dir> <ros_image_dir> <cred_file>"
    puts "Options:"
    puts "  -t, --test    Test mode: Simulates file upload, auto-update settings, and reboots"
    puts "  -d, --debug   Debug mode: Enables verbose Expect debugging, displays debug details on console, and creates a debug log in LOGS_DIR (independent of -l)"
+   puts "  -e            Enhanced logging: Logs MikroTik commands to CLI (with -d, -e is ignored)"
    puts "  -l            Log mode: Creates an upgrade log in LOGS_DIR and displays messages to user"
    puts "  -r version    Specify RouterOS version (e.g., 7.17.2 or 7.17) for upgrade or downgrade"
    exit 0
@@ -64,7 +67,7 @@ if {[lindex $argv 0] == "--help"} {
 
 # Log function for normal logging
 proc log_msg {msg} {
-   global debug_mode logging log_file_handle log_file
+   global debug_mode enhanced_logging logging log_file_handle log_file
    set timestamp [clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]
    puts stderr "\[$timestamp\]: $msg"
    if {$logging && [info exists log_file_handle]} {
@@ -91,19 +94,22 @@ proc debug_log {msg} {
 
 # Log function for commands sent to MikroTik
 proc log_cmd {cmd} {
-   global debug_mode logging log_file_handle
-   set timestamp [clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]
-   puts stderr "\[$timestamp\]: CMD> $cmd"
-   if {$logging && [info exists log_file_handle]} {
-      if {[catch {puts $log_file_handle "\[$timestamp\]: CMD> $cmd"} err]} {
-         puts stderr "\[$timestamp\]: ERROR: Failed to write to log file: $err"
-         debug_log "Failed to write to log file: $err, command: $cmd"
-      } else {
-         flush $log_file_handle
+   global debug_mode enhanced_logging logging log_file_handle log_file
+   # Log commands only if debug_mode or enhanced_logging is enabled (-d or -e)
+   if {$debug_mode || $enhanced_logging} {
+      set timestamp [clock format [clock seconds] -format "%Y-%m-%d %H:%M:%S"]
+      puts stderr "\[$timestamp\]: CMD> $cmd"
+      if {$logging && [info exists log_file_handle]} {
+         if {[catch {puts $log_file_handle "\[$timestamp\]: CMD> $cmd"} err]} {
+            puts stderr "\[$timestamp\]: ERROR: Failed to write to log file $log_file: $err"
+            debug_log "Failed to write to log file $log_file: $err, command: $cmd"
+         } else {
+            flush $log_file_handle
+         }
       }
-   }
-   if {$debug_mode} {
-      debug_log "\[$timestamp\]: CMD> $cmd"
+      if {$debug_mode} {
+         debug_log "\[$timestamp\]: CMD> $cmd"
+      }
    }
 }
 
@@ -525,6 +531,11 @@ while {$i < $argc} {
       incr i
       continue
    }
+   if {$arg == "-e"} {
+      set enhanced_logging 1
+      incr i
+      continue
+   }
    if {$arg == "-l"} {
       set logging 1
       incr i
@@ -545,7 +556,7 @@ while {$i < $argc} {
 set argv $argv_new
 
 if {[llength $argv] != 4} {
-   fail_with_error "Usage: [info script] \[-t|--test\] \[-d|--debug\] \[-l\] \[-r version\] <host> <backup_dir> <ros_image_dir> <cred_file>" 5
+   fail_with_error "Usage: [info script] \[-t|--test\] \[-d|--debug\] \[-e\] \[-l\] \[-r version\] <host> <backup_dir> <ros_image_dir> <cred_file>" 5
 }
 
 set host_cli [lindex $argv 0]
