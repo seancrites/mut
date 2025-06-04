@@ -3,7 +3,7 @@
 # Script: mut_up.exp
 # Purpose: Automates MikroTik RouterOS upgrades via SSH, with optional test mode and version specification
 # Author: Sean Crites
-# Version: 1.0.19
+# Version: 1.0.20
 # Created: 2025-05-18
 # Last Updated: 2025-06-04
 #
@@ -110,17 +110,21 @@ proc log_cmd {cmd} {
 # Handle failure with modular error messaging
 proc fail_with_error {msg code} {
    global debug_mode logging log_file_handle debug_file_handle
-   log_msg "ERROR: $msg"
-   if {$logging && [info exists log_file_handle]} {
-      close $log_file_handle
-   }
+   # Log error message and debug info before closing handles
+   log_msg "ERROR: $msg (code $code)"
    if {$debug_mode && [info exists debug_file_handle]} {
       debug_log "Exiting with error: $msg (code $code)"
-      close $debug_file_handle
+   }
+   puts stderr "$msg"
+   # Close file handles after all logging is complete
+   if {$logging && [info exists log_file_handle]} {
+      catch {close $log_file_handle}
+   }
+   if {$debug_mode && [info exists debug_file_handle]} {
+      catch {close $debug_file_handle}
       log_file
    }
    log_user 0
-   puts stderr "$msg"
    exit $code
 }
 
@@ -853,11 +857,12 @@ expect {
                log_user 1
                if {$logging && [info exists log_file_handle]} {
                   debug_log "Closing log file handle: $log_file_handle"
-                  close $log_file_handle
+                  catch {close $log_file_handle}
                }
                if {$debug_mode && [info exists debug_file_handle]} {
                   debug_log "Closing debug file handle: $debug_file_handle"
-                  close $debug_file_handle
+                  catch {close $debug_file_handle}
+                  log_file
                }
                exit 0
             }
@@ -1223,11 +1228,11 @@ log_msg "Upgrade process completed successfully for $host"
 # Clean up
 if {$logging && [info exists log_file_handle]} {
    debug_log "Closing log file handle: $log_file_handle"
-   close $log_file_handle
+   catch {close $log_file_handle}
 }
 if {$debug_mode && [info exists debug_file_handle]} {
    debug_log "Closing debug file handle: $debug_file_handle"
-   close $debug_file_handle
+   catch {close $debug_file_handle}
    log_file
 }
 log_user 0
