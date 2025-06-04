@@ -3,7 +3,7 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.1.6
+# Version: 1.1.7
 # Created: 2025-05-18
 # Last Updated: 2025-06-04
 #
@@ -48,10 +48,10 @@ ROS_IMAGE_DIR="$SCRIPT_DIR/os"
 BACKUP_DIR="$SCRIPT_DIR/backups"
 LOGS_DIR="$SCRIPT_DIR/logs"
 EXPECT_SCRIPT="$SCRIPT_DIR/mut_up.exp"
-SSH_TIMEOUT=30
+SSH_TIMEOUT="${SSH_TIMEOUT:=30}"
 USERNAME=""
 PASSWORD=""
-MTIK_CLI="+tce200w"
+MTIK_CLI="${MTIK_CLI:=+tce200w}"
 DEBUG=0
 ENHANCED_LOGGING=0
 SUPPRESS_CSV=0
@@ -108,8 +108,7 @@ check_host_reachable()
 {
    host="$1"
    # Use ping with 2 attempts and a 2-second timeout per attempt
-   ping -c 2 -W 2 "$host" >/dev/null 2>&1
-   if [ $? -eq 0 ]
+   if ping -c 2 -W 2 "$host" >/dev/null 2>&1
    then
       [ "$DEBUG" -eq 1 ] && log_msg "Debug: Host $host is reachable"
       return 0
@@ -180,7 +179,7 @@ preflight_checks()
       log_msg "ERROR: EXPECT_SCRIPT $EXPECT_SCRIPT is not readable"
       exit 1
    fi
-   if [ -z "$SSH_TIMEOUT" ] || ! expr "$SSH_TIMEOUT" + 0 >/dev/null 2>&1
+   if [ -z "$SSH_TIMEOUT" ] || [ -n "${SSH_TIMEOUT##*[0-9]*}" ] || [ "$SSH_TIMEOUT" = "0" ]
    then
       log_msg "ERROR: SSH_TIMEOUT must be a positive number"
       exit 1
@@ -339,8 +338,7 @@ ssh_exec()
    then
       log_msg "CMD> $cmd"
    fi
-   SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME@$host" "$cmd" 2>/dev/null
-   if [ $? -ne 0 ]
+   if ! SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME@$host" "$cmd" 2>/dev/null
    then
       log_msg "ERROR: SSH command failed on $USERNAME_MTIK@$host"
       exit 1
@@ -618,8 +616,7 @@ run_upgrade()
    csv_path="$2"
    log_msg "Starting Upgrade Process on $host"
    # Check if host is reachable
-   check_host_reachable "$host"
-   if [ $? -ne 0 ]
+   if ! check_host_reachable "$host"
    then
       # Update CSV if provided and not in test mode
       if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
