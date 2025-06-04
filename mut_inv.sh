@@ -343,6 +343,17 @@ ssh_exec()
       log_msg "ERROR: SSH command failed on $USERNAME_MTIK@$host"
       exit 1
    fi
+# Validate MAC address format (XX:XX:XX:XX:XX:XX)
+is_valid_mac()
+{
+   mac="$1"
+   # Check for 6 colon-separated hex pairs
+   if echo "$mac" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
+   then
+      return 0
+   else
+      return 1
+   fi
 }
 
 # Parse neighbor data to CSV
