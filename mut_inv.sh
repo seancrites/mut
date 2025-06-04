@@ -3,9 +3,9 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.1.3
+# Version: 1.1.4
 # Created: 2025-05-18
-# Last Updated: 2025-06-03
+# Last Updated: 2025-06-04
 #
 # Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
 # This script is licensed under the BSD 3-Clause License.
@@ -50,6 +50,7 @@ EXPECT_SCRIPT="$SCRIPT_DIR/mut_up.exp"
 SSH_TIMEOUT=30
 USERNAME=""
 PASSWORD=""
+MTIK_CLI="+tce200w"
 DEBUG=0
 SUPPRESS_CSV=0
 TEST_MODE=0
@@ -231,7 +232,7 @@ prompt_credentials()
       log_msg "ERROR: Username cannot be empty"
       exit 1
    fi
-   USERNAME="${USERNAME}+tce200w"
+   USERNAME_MTIK="${USERNAME}${MTIK_CLI}"
    printf "Enter MikroTik password: "
    # Check if stdin is a terminal before using stty
    if [ -t 0 ]
@@ -251,7 +252,7 @@ prompt_credentials()
       exit 1
    fi
    CRED_FILE="/tmp/mikrotik_cred_$$.txt"
-   echo "username=$USERNAME" > "$CRED_FILE"
+   echo "username=$USERNAME_MTIK" > "$CRED_FILE"
    echo "password=$PASSWORD" >> "$CRED_FILE"
    chmod 600 "$CRED_FILE"
 }
@@ -319,7 +320,7 @@ ssh_exec()
    SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME@$host" "$cmd" 2>/dev/null
    if [ $? -ne 0 ]
    then
-      log_msg "ERROR: SSH command failed on $USERNAME@$host"
+      log_msg "ERROR: SSH command failed on $USERNAME_MTIK@$host"
       exit 1
    fi
 }
@@ -632,11 +633,9 @@ run_upgrade()
       (eval "$expect_cmd 2>&1"; echo $? > /tmp/mut_exit_$$.tmp) | tee -a "$LOG_FILE"
       status=$(cat /tmp/mut_exit_$$.tmp)
       rm -f /tmp/mut_exit_$$.tmp
-      log_msg "DEV: With Logging Exit Code: $status"
    else
       eval "$expect_cmd"
       status=$?
-      log_msg "DEV: Exit Code: $status"
    fi
    # Update CSV based on upgrade result if provided and not in test mode
    if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
