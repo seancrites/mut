@@ -60,6 +60,12 @@ LOGGING=0
 FILTER=""
 ROS_VERSION=""
 
+# WARNING: If CLEANUP is disabled, temporary files, including MikroTik credentials, may get stored locally in /tmp.
+CLEANUP=1
+
+# Catch EXIT, INT, TERM, HUP to ensure cleanup of credentials file
+trap cleanup 0 1 2 15
+
 # --- Function Definitions ---
 
 # Print usage and exit
@@ -485,6 +491,33 @@ build_inventory()
    fi
 }
 
+# Remove temporary files on exit or interrupt
+cleanup()
+{
+   if [ "$CLEANUP" -eq 1 ]
+   then
+      if [ -n "$CRED_FILE" ] && [ -f "$CRED_FILE" ]
+      then
+         rm -f "$CRED_FILE" 2>/dev/null
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Removed temporary credentials file $CRED_FILE"
+         log_msg "Debug: Removed temporary credentials file $CRED_FILE"
+
+      fi
+
+      if [ -n "$tmp_hosts" ] && [ -f "$tmp_hosts" ]
+      then
+         rm -f "$tmp_hosts" 2>/dev/null
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Removed temporary MikroTik hosts file $tmp_hosts"
+      fi
+
+      if [ -n "$tmp_csv" ] && [ -f "$tmp_csv" ]
+      then
+         rm -f "$tmp_csv" 2>/dev/null
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Removed temporary MikroTik CSV file $tmp_csv"
+      fi
+   fi
+}
+
 # Filter hosts from CSV, removing duplicates
 filter_hosts()
 {
@@ -709,7 +742,6 @@ run_upgrade()
       fi
    else
       log_msg "Firmware update failed for $host ($status)"
-      log_msg ""
       return 1
    fi
    log_msg ""
