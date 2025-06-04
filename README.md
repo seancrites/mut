@@ -8,15 +8,16 @@ This software is provided by the copyright holders and contributors "as is" and 
 
 ## Features
 
-- **Inventory Creation**: Generates a CSV file with details like identity, IP address, MAC address, interface, platform, board name, version, and status using MikroTik neighbor data.
+- **Inventory Creation**: Generates a CSV file with details like identity, IP address, MAC address, interface, platform, board_name, version, and upgrade status using MikroTik neighbor data.
 - **Configuration Backups**: Automatically backs up router configurations before upgrades, saving them as `.rsc` files.
 - **RouterOS Upgrades/Downgrades**: Supports upgrading or downgrading to specific RouterOS versions (e.g., `7.18` or `7.18.2`), with version selection logic to pick the highest patch or exact match, including addon packages (e.g., `wireless`, `dhcp`).
 - **Air-Gapped Support**: Enables automated updates in air-gapped networks by downloading the project and RouterOS `.npk` files/packages offline.
 - **Hostname Support**: Handles FQDNs (e.g., `router.prv.example.com`), short hostnames (e.g., `router.prv`), and local FQDNs (e.g., `router.local.lan`) with a fallback mechanism that tries short hostname prompts first, then full FQDN.
-- **CSV Filtering**: Allows upgrades of specific devices by filtering CSV data with `awk` regex on any field (e.g., identity, board_name).
+- **CSV Filtering**: Allows upgrades of specific devices by filtering CSV data with `awk` regex on `identity` or `board_name` fields.
+- **Failure Tracking**: Tracks and summarizes failed upgrades when processing multiple devices, ensuring all devices are attempted.
 - **Test Mode**: Simulates upgrades without applying changes, ideal for testing workflows.
 - **Debug Mode**: Provides verbose output and detailed logging for troubleshooting.
-- **Logging**: Saves detailed logs to a specified directory for audit trails.
+- **Logging**: Saves detailed logs to a specified directory, including a summary of failed upgrades for multiple devices.
 - **POSIX Compliance**: `mut_inv.sh` is largely POSIX-compliant, with documented external dependencies.
 - **Configuration File**: Supports a `mut_opt.conf` file for customizing paths and settings.
 - **Timeout Control**: Uses 10-second local timeouts for SSH prompt matching in `mut_up.exp`, ensuring responsiveness across network types.
@@ -47,6 +48,7 @@ For air-gapped networks, download the project and `.npk` files offline and trans
 ## Installation
 
 1. **Clone the Repository**:
+
    ```bash
    git clone https://github.com/seancrites/mut.git
    cd mut
@@ -54,6 +56,7 @@ For air-gapped networks, download the project and `.npk` files offline and trans
 
 2. **Set Up Directories**:
    Create directories for RouterOS images, backups, and logs:
+
    ```bash
    mkdir -p os backups logs
    ```
@@ -66,12 +69,14 @@ For air-gapped networks, download the project and `.npk` files offline and trans
 
 5. **Set Permissions**:
    Make scripts executable:
+
    ```bash
    chmod +x mut_inv.sh mut_up.exp
    ```
 
 6. **Configure `mut_opt.conf`** (optional):
    Edit the included `mut_opt.conf` to customize paths (e.g., `ROS_IMAGE_DIR`, `BACKUP_DIR`, `LOGS_DIR`, `SSH_TIMEOUT`):
+
    ```plaintext
    ROS_IMAGE_DIR=$PWD/os
    BACKUP_DIR=$PWD/backups
@@ -86,47 +91,62 @@ For air-gapped networks, download the project and `.npk` files offline and trans
 Generate a CSV inventory from a MikroTik router’s IP neighbor data.
 
 - **Console Output** (no CSV file):
+
   ```bash
   ./mut_inv.sh -b <host>
   ```
+
   Example:
+
   ```bash
   ./mut_inv.sh -b router.prv.example.com
   ```
 
 - **Save to CSV** (default: `$HOME/mikrotik_inventory_<timestamp>.csv`, or specify with `-c`):
+
   ```bash
   ./mut_inv.sh -b [-c inventory.csv] <host>
+
   ```
+
   Example:
+
   ```bash
   ./mut_inv.sh -b -c routers.csv router.prv.example.com
   ```
 
 ### Upgrade Mode
 
-Upgrade or downgrade MikroTik routers, either directly or based on a filtered CSV.
+Upgrade or downgrade MikroTik routers, either directly or based on a filtered CSV. When using `-c`, all filtered devices are processed, even if some fail, with a summary of failures logged.
 
 - **Direct Upgrade** (single host):
+
   ```bash
   ./mut_inv.sh -u [-r version] <host>
   ```
+
   Example (upgrade to latest `7.18` patch):
+
   ```bash
   ./mut_inv.sh -u -r 7.18 router.prv.example.com
   ```
 
 - **Filtered Upgrade** (from CSV):
+
   ```bash
   ./mut_inv.sh -u -c <csv_file> -f <filter> [-r version]
   ```
-  Example (upgrade devices with board name containing “rb” to `7.18.2`):
+
+  Example (upgrade devices with board_name containing “rb” to `7.18.2`):
+
   ```bash
   ./mut_inv.sh -u -c routers.csv -f rb -r 7.18.2
   ```
-  Example (upgrade both CRS312 & mAP to `7.18.2`):
+
+  Example (upgrade both CRS312 and mAP devices to `7.16.2`):
+
   ```bash
-  ./mut_inv.sh -u -c routers.csv -f "crs312|rbmap2nd" -r 7.18.2
+  ./mut_inv.sh -u -c routers.csv -f "crs312|rbmap2nd" -r 7.16.2
   ```
 
 ### Additional Options
@@ -137,8 +157,9 @@ Upgrade or downgrade MikroTik routers, either directly or based on a filtered CS
 - `-o <options_file>`: Use a custom configuration file (default: `mut_opt.conf`).
 
 Example with all options:
+
 ```bash
-./mut_inv.sh -u -c routers.csv -f RB -r 7.18.2 -d -t -l -o custom.conf
+./mut_inv.sh -u -c routers.csv -f rb -r 7.18.2 -d -t -l -o custom.conf
 ```
 
 ## CSV Format
@@ -152,25 +173,28 @@ The inventory CSV has the following columns:
 - `platform`: Platform (always “MikroTik”)
 - `board_name`: Board name (e.g., “RB4011”)
 - `version`: RouterOS version
-- `status`: Reserved for future use (currently empty)
+- `mut_status`: Upgrade status (e.g., `SUCCESS: Updated to v<version> <timestamp>`, `FAILED: Invalid credentials <timestamp>`)
 
 Example:
+
 ```csv
-"identity","ip_addr","mac_addr","interface","platform","board_name","version","status"
-"Router1","192.168.1.2","00:0C:29:12:34:56","ether1","MikroTik","RB4011","7.17.1",""
+identity,ip_addr,mac_addr,interface,platform,board_name,version,mut_status
+"Router1","192.168.1.2","00:0C:29:12:34:56","ether1","MikroTik","RB4011","7.16.2","SUCCESS: Updated to v7.16.2 20250603_123456 -0800"
+"Router2","192.168.1.3","00:0C:29:78:90:AB","ether2","MikroTik","CRS312","7.18.2","FAILED: Invalid credentials 20250603_123500 -0800"
 ```
 
 ## Backup Process
 
 - **When**: Backups are performed before upgrades in `mut_up.exp`.
 - **Format**: Configuration exports (`/export show-sensitive`) saved as `.rsc` files in `backups/`.
-- **Naming**: `config.<host>-<timestamp>.rsc` (e.g., `config.router1-20250601_123456.rsc`).
+- **Naming**: `config.<host>-<timestamp>.rsc` (e.g., `config.router1-20250603_123456.rsc`).
 - **Verification**: Backups are verified for readability and non-empty content.
 
 ## Logging
 
 - **Enabled**: With `-l` option.
 - **Location**: `logs/mut_inventory_<timestamp>.log` (for `mut_inv.sh`) and `logs/mut_upgrade_<timestamp>.log` (for `mut_up.exp`).
+- **Failure Summary**: In `-c` mode, a summary of failed upgrades is logged (e.g., `Summary: Failed upgrades for hosts: router1 router2`).
 - **Debug Logs**: With `-d`, additional debug logs (`logs/mut_upgrade_debug_<timestamp>.log`) include Expect diagnostics and CLI interactions.
 
 ## Security Notes
@@ -184,12 +208,13 @@ Example:
 - Requires routable IPv4 or IPv6 addresses (excludes link-local `fe80::` addresses).
 - Non-POSIX utilities (`awk`, `ssh`, `sshpass`, `expect`) are used, noted in headers.
 - Upgrade process assumes `.npk` files are organized in `os/vN.NN/` directories.
-- Downgrades may require manual intervention if RouterOS restrictions apply.
+- Multiple device upgrades (`-c`) continue despite failures, exiting with 0 unless a critical error occurs (e.g., invalid CSV).
 - Hostname for SSH must match the prompt set in `/system/identity/set name=NAME`, typically the short hostname for internet-routable FQDNs (e.g., `router.prv` for `router.prv.example.com`).
 
 ## Contributing
 
 Contributions are welcome! Please:
+
 1. Fork the repository.
 2. Create a feature branch (`git checkout -b feature/your-feature`).
 3. Commit changes (`git commit -m "Add your feature"`).
