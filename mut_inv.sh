@@ -3,7 +3,7 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.1.1
+# Version: 1.1.2
 # Created: 2025-05-18
 # Last Updated: 2025-06-03
 #
@@ -690,7 +690,7 @@ run_upgrade()
       fi
    else
       log_msg "Firmware update failed for $host ($status)"
-      exit 1
+      return 1
    fi
    log_msg ""
 }
