@@ -3,7 +3,7 @@
 # Script: mut_up.exp
 # Purpose: Automates MikroTik RouterOS upgrades via SSH, with optional test mode and version specification
 # Author: Sean Crites
-# Version: 1.0.23
+# Version: 1.0.24
 # Created: 2025-05-18
 # Last Updated: 2025-06-04
 #
@@ -431,7 +431,13 @@ proc check_and_reboot_firmware {host username password prompt max_attempts test_
                      expect {
                         "password:" {
                            log_user 0
+                           # Disable/Enable internal debugging to prevent password logging
+                           if {$debug_mode} { 
+                              exp_internal 0
+                              debug_log "Sending password ******" 
+                           }
                            send "$password\r"
+                           if {$debug_mode} { exp_internal 1 }
                            expect {
                               -re $prompt {
                                  log_msg "Reconnected to $host after firmware reboot"
@@ -696,7 +702,13 @@ spawn ssh -o StrictHostKeyChecking=no $username$mtik_cli@$host
 expect {
    "password:" {
       log_user 0
+      # Disable/Enable internal debugging to prevent password logging
+      if {$debug_mode} { 
+         exp_internal 0
+         debug_log "Sending password ******" 
+      }
       send "$password\r"
+      if {$debug_mode} { exp_internal 1 }
       expect {
          -timeout 10
          -re {\r\n(?:\r\n)*\s*MMM.*\r\n} {
@@ -793,7 +805,13 @@ expect {
                      expect {
                         "password:" {
                            log_user 0
+                           # Disable/Enable internal debugging to prevent password logging
+                           if {$debug_mode} { 
+                              exp_internal 0
+                              debug_log "Sending password ******" 
+                           }
                            send "$password\r"
+                           if {$debug_mode} { exp_internal 1 }
                            expect {
                               -re $prompt {
                                  log_msg "Reconnected to $host_cli after firmware reboot"
@@ -1108,7 +1126,13 @@ while {$attempt < $max_attempts} {
    expect {
       "password:" {
          log_user 0
+         # Disable/Enable internal debugging to prevent password logging
+         if {$debug_mode} { 
+            exp_internal 0
+            debug_log "Sending password ******" 
+         }
          send "$password\r"
+         if {$debug_mode} { exp_internal 1 }
          expect {
             -re $prompt {
                log_user 1
@@ -1179,7 +1203,13 @@ expect {
                      expect {
                         "password:" {
                            log_user 0
+                           # Disable/Enable internal debugging to prevent password logging
+                           if {$debug_mode} { 
+                              exp_internal 0
+                              debug_log "Sending password ******" 
+                           }
                            send "$password\r"
+                           if {$debug_mode} { exp_internal 1 }
                            expect {
                               -re $prompt {
                                  log_user 1
