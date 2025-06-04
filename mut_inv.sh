@@ -650,7 +650,23 @@ run_upgrade()
             ' "$csv_path" > "$tmp_csv" && mv "$tmp_csv" "$csv_path"
             log_msg "Updated CSV $csv_path: $host marked as SUCCESS"
          else
-            new_status="\"FAILED: Updating to v$ROS_VERSION $timestamp\""
+            case $status in
+               1)
+                  new_status="\"FAILED: Invalid credentials $timestamp\""
+                  ;;
+               2)
+                  new_status="\"FAILED: SSH timeout $timestamp\""
+                  ;;
+               3)
+                  new_status="\"FAILED: Connection refused $timestamp\""
+                  ;;
+               4)
+                  new_status="\"FAILED: SSH connection failed $timestamp\""
+                  ;;
+               *)
+                  new_status="\"FAILED: Unknown error (code $status) $timestamp\""
+                  ;;
+            esac
             awk -F',' -v host="\"$host\"" -v status="$new_status" -v OFS=',' '
                $1 == host {$8 = status; print $0}
                $1 != host {print $0}
