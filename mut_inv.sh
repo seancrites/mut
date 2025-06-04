@@ -689,6 +689,7 @@ run_upgrade()
       fi
    else
       log_msg "Firmware update failed for $host ($status)"
+      log_msg ""
       return 1
    fi
    log_msg ""
@@ -843,6 +844,8 @@ main()
             then
                log_msg ""
                log_msg "Summary: Failed upgrades for hosts:$failed_hosts"
+            else
+               log_msg "Summary: All updates were successful."
             fi
          else
             # Direct upgrade requires credentials immediately
