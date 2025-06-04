@@ -3,7 +3,7 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.1.5
+# Version: 1.1.6
 # Created: 2025-05-18
 # Last Updated: 2025-06-04
 #
@@ -27,7 +27,7 @@
 #        - "WARNING: No hosts match filter criteria (routable IPv4 or IPv6)" for no routable IPs
 #        - "WARNING: Host <host> is not reachable, skipping upgrade" for unreachable hosts
 #
-# Usage: mut_inv.sh [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-t] [-l] [-o options_file] [<host>]
+# Usage: mut_inv.sh [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-e] [-t] [-l] [-o options_file] [<host>]
 # Notes:
 #    - Build mode (-b): Builds CSV from <host> neighbor data. With -c csv_file, saves to specified path or current directory if writable, else $HOME; without -c, outputs to console.
 #    - Upgrade mode (-u):
@@ -35,8 +35,9 @@
 #        - With -c: Upgrades hosts from existing csv_file (at specified path, current directory, or $HOME) matching -f filter (no <host>, -f required).
 #    - Filter (-f) matches model_name first, then identity (alphanumeric, case-insensitive).
 #    - Version (-r version): Specifies RouterOS version (N.NN or N.NN.N). N.NN selects highest fix in os/vN.NN; N.NN.N selects exact version.
+#    - Debug mode (-d) enables debug output, logs all commands and responses, and passes -d to mut_up.exp.
+#    - Enhanced logging (-e) logs MikroTik commands to CLI (requires -b or -u; with -d, -e is ignored as -d includes command logging).
 #    - Test mode (-t) simulates upgrades using -t flag in mut_up.exp.
-#    - Debug mode (-d) enables debug output and passes -d to mut_up.exp.
 #    - Log mode (-l) enables logging to LOGS_DIR and displays output to user.
 #    - Non-POSIX utilities: ssh, sshpass, expect, ping
 #
@@ -52,6 +53,7 @@ USERNAME=""
 PASSWORD=""
 MTIK_CLI="+tce200w"
 DEBUG=0
+ENHANCED_LOGGING=0
 SUPPRESS_CSV=0
 TEST_MODE=0
 LOGGING=0
@@ -63,12 +65,13 @@ ROS_VERSION=""
 # Print usage and exit
 usage()
 {
-   echo "Usage: $0 [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-t] [-l] [-o options_file] [<host>]"
+   echo "Usage: $0 [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-e] [-t] [-l] [-o options_file] [<host>]"
    echo "Options:"
    echo "   -b             Build inventory CSV (no upgrades)"
    echo "   -u             Upgrade mode: upgrade host or filtered CSV hosts"
    echo "   -c csv_file    Write CSV to specified path, current directory if writable, or $HOME (build mode); read existing CSV from same locations (upgrade mode)"
    echo "   -d             Enable debug output and pass to expect script"
+   echo "   -e             Enable enhanced logging of MikroTik commands (with -d, -e is ignored)"
    echo "   -t             Enable test mode (simulates upgrades using -t in expect script)"
    echo "   -l             Enable logging to LOGS_DIR and display output"
    echo "   -f filter      Filter hosts to upgrade by model_name or identity (alphanumeric, requires -u and -c)"
@@ -176,7 +179,7 @@ preflight_checks()
       log_msg "ERROR: SSH_TIMEOUT must be a positive number"
       exit 1
    fi
-   # Check if expect script supports -t, -d, -l, and -r
+   # Check if expect script supports -t, -d, -e, -l, and -r
    if [ "$TEST_MODE" -eq 1 ]
    then
       if ! expect -f "$EXPECT_SCRIPT" --help 2>&1 | grep -q -- -t
@@ -190,6 +193,14 @@ preflight_checks()
       if ! expect -f "$EXPECT_SCRIPT" --help 2>&1 | grep -q -- -d
       then
          log_msg "ERROR: $EXPECT_SCRIPT does not support -d option for debug mode"
+         exit 1
+      fi
+   fi
+   if [ "$ENHANCED_LOGGING" -eq 1 ]
+   then
+      if ! expect -f "$EXPECT_SCRIPT" --help 2>&1 | grep -q -- -e
+      then
+         log_msg "ERROR: $EXPECT_SCRIPT does not support -e option for enhanced logging"
          exit 1
       fi
    fi
@@ -316,6 +327,11 @@ ssh_exec()
    then
       log_msg "ERROR: Username or password not set for SSH to $host"
       exit 1
+   fi
+   # Log command only if enhanced logging (-e) or debug (-d) is enabled
+   if [ "$ENHANCED_LOGGING" -eq 1 ] || [ "$DEBUG" -eq 1 ]
+   then
+      log_msg "CMD> $cmd"
    fi
    SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME@$host" "$cmd" 2>/dev/null
    if [ $? -ne 0 ]
@@ -613,6 +629,10 @@ run_upgrade()
    then
       expect_cmd="$expect_cmd -d"
    fi
+   if [ "$ENHANCED_LOGGING" -eq 1 ]
+   then
+      expect_cmd="$expect_cmd -e"
+   fi
    if [ "$LOGGING" -eq 1 ]
    then
       expect_cmd="$expect_cmd -l"
@@ -723,6 +743,12 @@ main()
             ;;
          -d)
             DEBUG=1
+            shift
+            ;;
+         -e)
+            ENHANCED_LOGGING=1
+            # Added: Debug log to confirm -e is parsed
+            [ "$DEBUG" -eq 1 ] && log_msg "Debug: Enabled enhanced logging"
             shift
             ;;
          -t)
