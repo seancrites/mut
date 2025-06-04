@@ -347,7 +347,12 @@ ssh_exec()
 {
    host="$1"
    cmd="$2"
-   if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]
+   fatal="$3" # Optional flag to suppress error exit (1=fatal, 0=non-fatal)
+   if [ -z "$fatal" ]
+   then
+      fatal=1
+   fi
+   if [ -z "$USERNAME_MTIK" ] || [ -z "$PASSWORD" ]
    then
       log_msg "ERROR: Username or password not set for SSH to $host"
       exit 1
@@ -357,11 +362,18 @@ ssh_exec()
    then
       log_msg "CMD> $cmd"
    fi
-   if ! SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME@$host" "$cmd" 2>/dev/null
+   # Capture output and exit status, allow non-fatal failures
+   output=$(SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME_MTIK@$host" "$cmd" 2>/dev/null)
+   status=$?
+   if [ "$status" -ne 0 ] && [ "$fatal" -eq 1 ]
    then
       log_msg "ERROR: SSH command failed on $USERNAME_MTIK@$host"
       exit 1
    fi
+   echo "$output"
+   return "$status"
+}
+
 # Validate MAC address format (XX:XX:XX:XX:XX:XX)
 is_valid_mac()
 {
