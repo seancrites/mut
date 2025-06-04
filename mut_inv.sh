@@ -3,7 +3,7 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.1.0
+# Version: 1.1.1
 # Created: 2025-05-18
 # Last Updated: 2025-06-03
 #
@@ -494,53 +494,53 @@ filter_hosts()
             csv_path="$HOME/$csv_file"
          fi
          ;;
-   esac
-   if [ ! -f "$csv_path" ]
-   then
-      log_msg "ERROR: CSV file $csv_path does not exist"
-      exit 1
-   fi
-   if [ ! -r "$csv_path" ]
-   then
-      log_msg "ERROR: CSV file $csv_path is not readable"
-      exit 1
-   fi
-   if [ ! -w "$csv_path" ]
-   then
-      log_msg "ERROR: CSV file $csv_path is not writable"
-      exit 1
-   fi
-   tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
-   awk -F',' -v filter="$filter" '
-      BEGIN {
-         OFS=","; count=0
-      }
-      NR==1 { next }
-      {
-         model_name=tolower(gsub(/^"|"$/,"",$6))
-         identity=tolower(gsub(/^"|"$/,"",$1))
-         if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
-            print $1,$6; count++
+      esac
+      if [ ! -f "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path does not exist"
+         exit 1
+      fi
+      if [ ! -r "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path is not readable"
+         exit 1
+      fi
+      if [ ! -w "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path is not writable"
+         exit 1
+      fi
+      tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
+      awk -F',' -v filter="$filter" '
+         BEGIN {
+            OFS=","; count=0
          }
-      }
-      END {
-         if (count == 0) {
-            print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
+         NR==1 { next }
+         {
+            model_name=tolower(gsub(/^"|"$/,"",$6))
+            identity=tolower(gsub(/^"|"$/,"",$1))
+            if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
+               print $1,$6; count++
+            }
          }
-      }
-   ' "$csv_path" > "$tmp_hosts"
-   if [ ! -s "$tmp_hosts" ]
-   then
-      log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
-      rm -f "$tmp_hosts"
-      exit 1
-   fi
-   log_msg "Hosts matched by filter '$filter':"
-   while IFS=',' read -r identity model_name
-   do
-      log_msg "  Identity: $identity, Model: $model_name"
-   done < "$tmp_hosts"
-   echo "$tmp_hosts,$csv_path"
+         END {
+            if (count == 0) {
+               print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
+            }
+         }
+      ' "$csv_path" > "$tmp_hosts"
+      if [ ! -s "$tmp_hosts" ]
+      then
+         log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
+         rm -f "$tmp_hosts"
+         exit 1
+      fi
+      log_msg "Hosts matched by filter '$filter':"
+      while IFS=',' read -r identity model_name
+      do
+         log_msg "  Identity: $identity, Model: $model_name"
+      done < "$tmp_hosts"
+      echo "$tmp_hosts,$csv_path"
 }
 
 # Confirm upgrades
@@ -628,11 +628,15 @@ run_upgrade()
    fi
    if [ "$LOGGING" -eq 1 ]
    then
-      eval "$expect_cmd 2>&1 | tee -a \"$LOG_FILE\""
-      status=$?
+      # Run expect in a subshell, capture exit status, and pipe output to tee
+      (eval "$expect_cmd 2>&1"; echo $? > /tmp/mut_exit_$$.tmp) | tee -a "$LOG_FILE"
+      status=$(cat /tmp/mut_exit_$$.tmp)
+      rm -f /tmp/mut_exit_$$.tmp
+      log_msg "DEV: With Logging Exit Code: $status"
    else
       eval "$expect_cmd"
       status=$?
+      log_msg "DEV: Exit Code: $status"
    fi
    # Update CSV based on upgrade result if provided and not in test mode
    if [ -n "$csv_path" ] && [ "$TEST_MODE" -eq 0 ]
