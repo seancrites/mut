@@ -3,7 +3,7 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.1.2
+# Version: 1.1.3
 # Created: 2025-05-18
 # Last Updated: 2025-06-03
 #
@@ -645,7 +645,7 @@ run_upgrade()
       then
          tmp_csv="/tmp/mikrotik_csv_$$.csv"
          timestamp=$(date '+%Y-%m-%d %H:%M:%S %z')
-         if [ $status -eq 0 ]
+         if [ "$status" -eq 0 ]
          then
             new_status="\"SUCCESS: Updated to v$ROS_VERSION $timestamp\""
             awk -F',' -v host="\"$host\"" -v status="$new_status" -v ver="\"$ROS_VERSION\"" -v OFS=',' '
@@ -680,7 +680,7 @@ run_upgrade()
       fi
    fi
    rm -f "$CRED_FILE"
-   if [ $status -eq 0 ]
+   if [ "$status" -eq 0 ]
    then
       if [ "$TEST_MODE" -eq 1 ]
       then
@@ -833,12 +833,18 @@ main()
             # Prompt for credentials only after confirmation
             prompt_credentials
             log_msg "Processing upgrades for filtered hosts in $csv_path"
+            failed_hosts=""
             while IFS=',' read -r target_host model_name
             do
                prompt_credentials
-               run_upgrade "$target_host" "$csv_path"
+               run_upgrade "$target_host" "$csv_path" || failed_hosts="$failed_hosts $target_host"
             done < "$hosts_file"
             rm -f "$hosts_file"
+            if [ -n "$failed_hosts" ]
+            then
+               log_msg ""
+               log_msg "Summary: Failed upgrades for hosts:$failed_hosts"
+            fi
          else
             # Direct upgrade requires credentials immediately
             prompt_credentials
