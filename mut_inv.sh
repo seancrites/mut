@@ -511,17 +511,13 @@ build_inventory()
    mac_addr=""
    # Try Ethernet interface
    ethernet_cmd=":put [/interface/ethernet/get value-name=mac-address [find where name=[/ip/address/get value-name=interface [find where address~\"$ip_addr\"]]]]"
-   mac_addr=$(ssh_exec "$host" "$ethernet_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p')
-   # log_msg "DEV: MAC ADDR #1: $mac_addr END-OF-LOG-MSG  #1"
-   if [ $? -eq 0 ] && is_valid_mac "$mac_addr"
+   if mac_addr=$(ssh_exec "$host" "$ethernet_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p') && is_valid_mac "$mac_addr"
    then
       [ "$DEBUG" -eq 1 ] && log_msg "Debug: Found MAC address via Ethernet interface: $mac_addr"
    else
       # Try VLAN interface
       vlan_cmd=":put [/interface/vlan/get value-name=mac-address [find where name=[/ip/address/get value-name=interface [find where address~\"$ip_addr\"]]]]"
-      mac_addr=$(ssh_exec "$host" "$vlan_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p')
-
-      if [ $? -eq 0 ] && is_valid_mac "$mac_addr"
+      if mac_addr=$(ssh_exec "$host" "$vlan_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p') && is_valid_mac "$mac_addr"
       then
          [ "$DEBUG" -eq 1 ] && log_msg "Debug: Found MAC address via VLAN interface: $mac_addr"
       else
