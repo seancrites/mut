@@ -118,6 +118,17 @@ check_host_reachable()
    fi
 }
 
+# Validate RouterOS version format
+validate_ros_version()
+{
+   version="$1"
+   if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+   then
+      log_msg "ERROR: Invalid RouterOS version format: $version (expected N.NN or N.NN.N)"
+      exit 1
+   fi
+}
+
 # Perform pre-flight checks
 preflight_checks()
 {
@@ -909,6 +920,11 @@ main()
             ;;
       esac
    done
+   # Validate RouterOS version if provided
+   if [ -n "$ROS_VERSION" ]
+   then
+      validate_ros_version "$ROS_VERSION"
+   fi
    # Set up logging if enabled
    if [ "$LOGGING" -eq 1 ]
    then
