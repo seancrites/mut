@@ -494,11 +494,55 @@ build_inventory()
    host="$1"
    csv_file="$2"
    log_msg "Building inventory for $host"
+   # Check if host is reachable before SSH commands
+   if ! check_host_reachable "$host"
+   then
+      log_msg "ERROR: Host $host is not reachable, cannot build inventory"
+      exit 1
+   fi
+   # Resolve host to IP address for ip_addr
+   ip_addr=$(resolve_host_to_ip "$host")
+   [ "$DEBUG" -eq 1 ] && log_msg "Debug: Resolved host $host to IP $ip_addr"
+   # Collect connected device data
+   identity=$(ssh_exec "$host" ":put [/system/identity/print as-value]" | awk -F'=' '/name=/ {print $2}' | sed -e 's/\r$//g')
+   model_name=$(ssh_exec "$host" ":put [/system/routerboard/get model]" | sed -e 's/\r$//g')
+   version=$(ssh_exec "$host" ":put [/system/routerboard/get current-firmware]" | sed -e 's/\r$//g')
+   # Try Ethernet then VLAN for mac_addr
+   mac_addr=""
+   # Try Ethernet interface
+   ethernet_cmd=":put [/interface/ethernet/get value-name=mac-address [find where name=[/ip/address/get value-name=interface [find where address~\"$ip_addr\"]]]]"
+   mac_addr=$(ssh_exec "$host" "$ethernet_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p')
+   # log_msg "DEV: MAC ADDR #1: $mac_addr END-OF-LOG-MSG  #1"
+   if [ $? -eq 0 ] && is_valid_mac "$mac_addr"
+   then
+      [ "$DEBUG" -eq 1 ] && log_msg "Debug: Found MAC address via Ethernet interface: $mac_addr"
+   else
+      # Try VLAN interface
+      vlan_cmd=":put [/interface/vlan/get value-name=mac-address [find where name=[/ip/address/get value-name=interface [find where address~\"$ip_addr\"]]]]"
+      mac_addr=$(ssh_exec "$host" "$vlan_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p')
+
+      if [ $? -eq 0 ] && is_valid_mac "$mac_addr"
+      then
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Found MAC address via VLAN interface: $mac_addr"
+      else
+         mac_addr=""
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Failed to retrieve MAC address for $ip_addr"
+      fi
+   fi
+   # Validate collected data
+   if [ -z "$identity" ] || [ -z "$model_name" ] || [ -z "$version" ] || [ -z "$ip_addr" ] || [ -z "$mac_addr" ]
+   then
+      log_msg "ERROR: Failed to collect complete data for $host (identity=$identity, model=$model_name, version=$version, ip=$ip_addr, mac=$mac_addr)"
+      exit 1
+   fi
+   # Format connected device data as CSV row
+   self_data="\"$identity\",\"$ip_addr\",\"$mac_addr\",\"self\",\"MikroTik\",\"$model_name\",\"$version\",\"\""
+   [ "$DEBUG" -eq 1 ] && log_msg "Debug: Connected device data: $self_data"
+   # Collect neighbor data
    raw_data=$(ssh_exec "$host" ":put [/ip/neighbor/print as-value]")
    if [ -z "$raw_data" ]
    then
-      log_msg "ERROR: Empty output from :put [/ip/neighbor/print as-value]"
-      exit 1
+      log_msg "WARNING: Empty output from :put [/ip/neighbor/print as-value], including only connected device"
    fi
    log_msg "Parsing neighbor data"
    if [ "$SUPPRESS_CSV" -eq 1 ]
@@ -536,10 +580,10 @@ build_inventory()
             ;;
       esac
       confirm_overwrite "$csv_path"
-      parse_neighbors "$raw_data" > "$csv_path"
+      parse_neighbors "$raw_data" "$self_data" > "$csv_path"
       log_msg "Inventory saved to $csv_path"
    else
-      parse_neighbors "$raw_data"
+      parse_neighbors "$raw_data" "$self_data"
       log_msg "Inventory output to console"
    fi
 }
@@ -831,7 +875,7 @@ main()
             ;;
          -e)
             ENHANCED_LOGGING=1
-            # Added: Debug log to confirm -e is parsed
+            # Debug log to confirm -e is parsed
             [ "$DEBUG" -eq 1 ] && log_msg "Debug: Enabled enhanced logging"
             shift
             ;;
