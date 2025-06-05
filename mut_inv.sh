@@ -323,12 +323,36 @@ confirm_overwrite()
    fi
 }
 
-# Execute SSH command
+# Resolve hostname or IP to IP address for ip_addr field
+resolve_host_to_ip()
+{
+   host="$1"
+   # If host is already an IP (IPv4 or IPv6), return it
+   if echo "$host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$'
+   then
+      echo "$host"
+      return 0
+   fi
+   # Try to resolve hostname using getent (POSIX-compliant, fallback to host command)
+   ip_addr=$(getent ahosts "$host" 2>/dev/null | awk '/^[0-9a-fA-F.:]+/ {print $1; exit}' || host "$host" 2>/dev/null | awk '/has address/ {print $4; exit}')
+   if [ -z "$ip_addr" ]
+   then
+      log_msg "ERROR: Cannot resolve hostname $host to IP address"
+      exit 1
+   fi
+   echo "$ip_addr"
+}
+
 ssh_exec()
 {
    host="$1"
    cmd="$2"
-   if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]
+   fatal="$3" # Optional flag to suppress error exit (1=fatal, 0=non-fatal)
+   if [ -z "$fatal" ]
+   then
+      fatal=1
+   fi
+   if [ -z "$USERNAME_MTIK" ] || [ -z "$PASSWORD" ]
    then
       log_msg "ERROR: Username or password not set for SSH to $host"
       exit 1
@@ -338,10 +362,28 @@ ssh_exec()
    then
       log_msg "CMD> $cmd"
    fi
-   if ! SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME@$host" "$cmd" 2>/dev/null
+   # Capture output and exit status, allow non-fatal failures
+   output=$(SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout="$SSH_TIMEOUT" -o StrictHostKeyChecking=no "$USERNAME_MTIK@$host" "$cmd" 2>/dev/null)
+   status=$?
+   if [ "$status" -ne 0 ] && [ "$fatal" -eq 1 ]
    then
       log_msg "ERROR: SSH command failed on $USERNAME_MTIK@$host"
       exit 1
+   fi
+   echo "$output"
+   return "$status"
+}
+
+# Validate MAC address format (XX:XX:XX:XX:XX:XX)
+is_valid_mac()
+{
+   mac="$1"
+   # Check for 6 colon-separated hex pairs
+   if echo "$mac" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
+   then
+      return 0
+   else
+      return 1
    fi
 }
 
@@ -349,79 +391,92 @@ ssh_exec()
 parse_neighbors()
 {
    raw_data="$1"
-   if [ -z "$raw_data" ] || ! echo "$raw_data" | grep -q '.id='
+   self_data="$2" # Connected device data (CSV row)
+   if [ -z "$raw_data" ] && [ -z "$self_data" ]
    then
-      log_msg "WARNING: No valid neighbors found in output"
+      log_msg "WARNING: No valid neighbors or self data found"
       echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
       return
    fi
    tmp_output="/tmp/mikrotik_neighbors_$$.csv"
-   echo "$raw_data" | awk -v debug="$DEBUG" '
-      BEGIN {
-         RS=";"; FS="="; OFS=",";
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
-         count=0
-         print "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
-      }
-      /.id=/ {
-         if (identity != "" && ip_addr != "") {
-            if (debug) print "Debug: Processing entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
-            if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
-               identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
-               ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
-               mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
-               iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
-               platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
-               model_esc=model; gsub(/"/, "\"\"", model_esc)
-               version_esc=version; gsub(/"/, "\"\"", version_esc)
-               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
-               printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
-                      identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, mut_status_esc
-               if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
-               count++
-            } else {
-               if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+   {
+      echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
+      # Output connected device data first, if provided
+      if [ -n "$self_data" ]
+      then
+         echo "$self_data"
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Added connected device to CSV: $self_data"
+      fi
+      # Process neighbor data if present
+      if [ -n "$raw_data" ] && echo "$raw_data" | grep -q '.id='
+      then
+         echo "$raw_data" | awk -v debug="$DEBUG" '
+            BEGIN {
+               RS=";"; FS="="; OFS=",";
+               identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
+               count=0
             }
-         } else if (identity != "") {
-            if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
-         }
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
-      }
-      /^address=/ { ip_addr=$2; if (debug) print "Debug: Set ip_addr=" ip_addr > "/dev/stderr" }
-      /^mac-address=/ { mac_addr=$2; if (debug) print "Debug: Set mac_addr=" mac_addr > "/dev/stderr" }
-      /^identity=/ { identity=$2 }
-      /^interface=/ { iface=$2 }
-      /^board=/ { model=$2 }
-      /^version=/ {
-         version=$2;
-         sub(/ \(.*/, "", version)
-      }
-      END {
-         if (identity != "" && ip_addr != "") {
-            if (debug) print "Debug: Processing final entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
-            if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
-               identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
-               ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
-               mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
-               iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
-               platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
-               model_esc=model; gsub(/"/, "\"\"", model_esc)
-               version_esc=version; gsub(/"/, "\"\"", version_esc)
-               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
-               printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
-                      identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, mut_status_esc
-               if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
-               count++
-            } else {
-               if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+            /.id=/ {
+               if (identity != "" && ip_addr != "") {
+                  if (debug) print "Debug: Processing entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
+                  if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
+                     identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
+                     ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
+                     mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
+                     iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
+                     platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
+                     model_esc=model; gsub(/"/, "\"\"", model_esc)
+                     version_esc=version; gsub(/"/, "\"\"", version_esc)
+                     mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
+                     printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                            identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
+                            platform_esc, model_esc, version_esc, mut_status_esc
+                     if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
+                     count++
+                  } else {
+                     if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+                  }
+               } else if (identity != "") {
+                  if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+               }
+               identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
             }
-         } else if (identity != "") {
-            if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
-         }
-      }
-   ' > "$tmp_output"
+            /^address=/ { ip_addr=$2; if (debug) print "Debug: Set ip_addr=" ip_addr > "/dev/stderr" }
+            /^mac-address=/ { mac_addr=$2; if (debug) print "Debug: Set mac_addr=" mac_addr > "/dev/stderr" }
+            /^identity=/ { identity=$2 }
+            /^interface=/ { iface=$2 }
+            /^board=/ { model=$2 }
+            /^version=/ {
+               version=$2;
+               sub(/ \(.*/, "", version)
+            }
+            END {
+               if (identity != "" && ip_addr != "") {
+                  if (debug) print "Debug: Processing final entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
+                  if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
+                     identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
+                     ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
+                     mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
+                     iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
+                     platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
+                     model_esc=model; gsub(/"/, "\"\"", model_esc)
+                     version_esc=version; gsub(/"/, "\"\"", version_esc)
+                     mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
+                     printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                            identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
+                            platform_esc, model_esc, version_esc, mut_status_esc
+                     if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
+                     count++
+                  } else {
+                     if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+                  }
+               } else if (identity != "") {
+                  if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+               }
+            }
+         '
+      fi
+   } > "$tmp_output"
    cat "$tmp_output"
    neighbor_count=$(awk 'NR>1' "$tmp_output" | wc -l)
    neighbor_count=$((neighbor_count))
@@ -439,11 +494,55 @@ build_inventory()
    host="$1"
    csv_file="$2"
    log_msg "Building inventory for $host"
+   # Check if host is reachable before SSH commands
+   if ! check_host_reachable "$host"
+   then
+      log_msg "ERROR: Host $host is not reachable, cannot build inventory"
+      exit 1
+   fi
+   # Resolve host to IP address for ip_addr
+   ip_addr=$(resolve_host_to_ip "$host")
+   [ "$DEBUG" -eq 1 ] && log_msg "Debug: Resolved host $host to IP $ip_addr"
+   # Collect connected device data
+   identity=$(ssh_exec "$host" ":put [/system/identity/print as-value]" | awk -F'=' '/name=/ {print $2}' | sed -e 's/\r$//g')
+   model_name=$(ssh_exec "$host" ":put [/system/routerboard/get model]" | sed -e 's/\r$//g')
+   version=$(ssh_exec "$host" ":put [/system/routerboard/get current-firmware]" | sed -e 's/\r$//g')
+   # Try Ethernet then VLAN for mac_addr
+   mac_addr=""
+   # Try Ethernet interface
+   ethernet_cmd=":put [/interface/ethernet/get value-name=mac-address [find where name=[/ip/address/get value-name=interface [find where address~\"$ip_addr\"]]]]"
+   mac_addr=$(ssh_exec "$host" "$ethernet_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p')
+   # log_msg "DEV: MAC ADDR #1: $mac_addr END-OF-LOG-MSG  #1"
+   if [ $? -eq 0 ] && is_valid_mac "$mac_addr"
+   then
+      [ "$DEBUG" -eq 1 ] && log_msg "Debug: Found MAC address via Ethernet interface: $mac_addr"
+   else
+      # Try VLAN interface
+      vlan_cmd=":put [/interface/vlan/get value-name=mac-address [find where name=[/ip/address/get value-name=interface [find where address~\"$ip_addr\"]]]]"
+      mac_addr=$(ssh_exec "$host" "$vlan_cmd" 0 | sed -n 's/\r$//; /^[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}:[0-9A-Fa-f]\{2\}$/p')
+
+      if [ $? -eq 0 ] && is_valid_mac "$mac_addr"
+      then
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Found MAC address via VLAN interface: $mac_addr"
+      else
+         mac_addr=""
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Failed to retrieve MAC address for $ip_addr"
+      fi
+   fi
+   # Validate collected data
+   if [ -z "$identity" ] || [ -z "$model_name" ] || [ -z "$version" ] || [ -z "$ip_addr" ] || [ -z "$mac_addr" ]
+   then
+      log_msg "ERROR: Failed to collect complete data for $host (identity=$identity, model=$model_name, version=$version, ip=$ip_addr, mac=$mac_addr)"
+      exit 1
+   fi
+   # Format connected device data as CSV row
+   self_data="\"$identity\",\"$ip_addr\",\"$mac_addr\",\"self\",\"MikroTik\",\"$model_name\",\"$version\",\"\""
+   [ "$DEBUG" -eq 1 ] && log_msg "Debug: Connected device data: $self_data"
+   # Collect neighbor data
    raw_data=$(ssh_exec "$host" ":put [/ip/neighbor/print as-value]")
    if [ -z "$raw_data" ]
    then
-      log_msg "ERROR: Empty output from :put [/ip/neighbor/print as-value]"
-      exit 1
+      log_msg "WARNING: Empty output from :put [/ip/neighbor/print as-value], including only connected device"
    fi
    log_msg "Parsing neighbor data"
    if [ "$SUPPRESS_CSV" -eq 1 ]
@@ -481,10 +580,10 @@ build_inventory()
             ;;
       esac
       confirm_overwrite "$csv_path"
-      parse_neighbors "$raw_data" > "$csv_path"
+      parse_neighbors "$raw_data" "$self_data" > "$csv_path"
       log_msg "Inventory saved to $csv_path"
    else
-      parse_neighbors "$raw_data"
+      parse_neighbors "$raw_data" "$self_data"
       log_msg "Inventory output to console"
    fi
 }
@@ -776,7 +875,7 @@ main()
             ;;
          -e)
             ENHANCED_LOGGING=1
-            # Added: Debug log to confirm -e is parsed
+            # Debug log to confirm -e is parsed
             [ "$DEBUG" -eq 1 ] && log_msg "Debug: Enabled enhanced logging"
             shift
             ;;
