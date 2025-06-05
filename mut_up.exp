@@ -127,7 +127,6 @@ proc fail_with_error {msg code} {
    }
    if {$debug_mode && [info exists debug_file_handle]} {
       catch {close $debug_file_handle}
-      log_file
    }
    log_user 0
    exit $code
@@ -653,8 +652,6 @@ if {$debug_mode} {
       flush $debug_file_handle
       log_msg "Debug mode enabled, logging to $debug_file"
    }
-   log_file -a $debug_file
-   log_user 1
 }
 
 # Run pre-flight checks
@@ -908,7 +905,6 @@ expect {
                if {$debug_mode && [info exists debug_file_handle]} {
                   debug_log "Closing debug file handle: $debug_file_handle"
                   catch {close $debug_file_handle}
-                  log_file
                }
                exit 0
             }
@@ -1297,7 +1293,6 @@ if {$logging && [info exists log_file_handle]} {
 if {$debug_mode && [info exists debug_file_handle]} {
    debug_log "Closing debug file handle: $debug_file_handle"
    catch {close $debug_file_handle}
-   log_file
 }
 log_user 0
 
