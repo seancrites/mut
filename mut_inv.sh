@@ -8,24 +8,24 @@
 # Last Updated: 2025-06-04
 #
 # Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
-# This script is licensed under the BSD 3-Clause License.
-# See the LICENSE file in the project root for the full license text.
+# See the BSD 3-Clause License in the repository root (LICENSE file) for details.
 #
 # Requirements:
 #    - POSIX-compliant shell (e.g., sh, bash, or dash)
+#    - POSIX utilities: awk, sed, read, stty, cat
 #    - SSH client (OpenSSH recommended, version 7.0 or later)
 #    - sshpass (version 1.06 or later)
 #    - Expect (version 5.45 or later) for mut_up.exp
-#    - Standard POSIX utilities: awk (mawk or gawk), sed, read, stty, cat
 #    - ping for host reachability checks
 #    - SSH access to MikroTik devices (port 22, admin privileges)
-#    - Write permissions for CSV output (current directory or $HOME, BACKUP_DIR, LOGS_DIR)
+#    - Write permissions for CSV output (current directory, $HOME, BACKUP_DIR, LOGS_DIR)
 #    - Optional: Configuration file (mut_opt.conf)
 #    - Environment: Linux or UNIX-like system
-#    - Warnings:
-#        - "WARNING: No valid neighbors found in output" for empty neighbor data
-#        - "WARNING: No hosts match filter criteria (routable IPv4 or IPv6)" for no routable IPs
-#        - "WARNING: Host <host> is not reachable, skipping upgrade" for unreachable hosts
+# Notes:
+#    - Warnings may include:
+#        - "No valid neighbors found in output" for empty neighbor data.
+#        - "No hosts match filter criteria (routable IPv4 or IPv6)" for no routable IPs.
+#        - "Host <host> is not reachable, skipping upgrade" for unreachable hosts.
 #
 # Usage: mut_inv.sh [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-e] [-t] [-l] [-o options_file] [<host>]
 # Notes:
@@ -39,7 +39,7 @@
 #    - Enhanced logging (-e) logs MikroTik commands to CLI (requires -b or -u; with -d, -e is ignored as -d includes command logging).
 #    - Test mode (-t) simulates upgrades using -t flag in mut_up.exp.
 #    - Log mode (-l) enables logging to LOGS_DIR and displays output to user.
-#    - Non-POSIX utilities: ssh, sshpass, expect, ping
+#    - Non-POSIX utilities: ssh, sshpass, expect, ping, getent, host
 #
 
 # --- Default Configuration Variables ---
@@ -66,7 +66,7 @@ CLEANUP=1
 # Catch EXIT, INT, TERM, HUP to ensure cleanup of credentials file
 trap cleanup 0 1 2 15
 
-# --- Function Definitions ---
+# --- Functions ---
 
 # Print usage and exit
 usage()
@@ -116,6 +116,71 @@ check_host_reachable()
       log_msg "WARNING: Host $host is not reachable, skipping upgrade"
       return 1
    fi
+}
+
+# Validate RouterOS version format
+validate_ros_version()
+{
+   version="$1"
+   if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+   then
+      log_msg "ERROR: Invalid RouterOS version format: $version (expected N.NN or N.NN.N)"
+      exit 1
+   fi
+}
+
+# Resolve CSV path for reading or writing
+resolve_csv_path()
+{
+   csv_file="$1"
+   mode="$2" # "read" or "write"
+   case "$csv_file" in
+      */*)
+         csv_path="$csv_file"
+         csv_dir=$(dirname "$csv_path")
+         if [ ! -d "$csv_dir" ]
+         then
+            log_msg "ERROR: Directory $csv_dir does not exist"
+            exit 1
+         fi
+         if [ "$mode" = "write" ] && [ ! -w "$csv_dir" ]
+         then
+            log_msg "ERROR: Directory $csv_dir is not writable"
+            exit 1
+         fi
+         ;;
+      *)
+         csv_path="./$csv_file"
+         if [ "$mode" = "write" ] && [ ! -w . ]
+         then
+            log_msg "WARNING: Current directory not writable, falling back to $HOME"
+            csv_path="$HOME/$csv_file"
+            if [ ! -w "$HOME" ]
+            then
+               log_msg "ERROR: $HOME is not writable"
+               exit 1
+            fi
+         elif [ "$mode" = "read" ] && { [ ! -f "$csv_path" ] || [ ! -r "$csv_path" ]; }
+         then
+            log_msg "WARNING: CSV $csv_path not found or not readable, trying $HOME"
+            csv_path="$HOME/$csv_file"
+         fi
+         ;;
+   esac
+   if [ "$mode" = "read" ]
+   then
+      if [ ! -f "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path does not exist"
+         exit 1
+      fi
+      if [ ! -r "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path is not readable"
+         exit 1
+      fi
+   fi
+   echo "$csv_path"
 }
 
 # Perform pre-flight checks
@@ -343,6 +408,7 @@ resolve_host_to_ip()
    echo "$ip_addr"
 }
 
+# Execute SSH command
 ssh_exec()
 {
    host="$1"
@@ -540,41 +606,16 @@ build_inventory()
    then
       log_msg "WARNING: Empty output from :put [/ip/neighbor/print as-value], including only connected device"
    fi
+   # Check for completely empty data
+   if [ -z "$self_data" ] && [ -z "$raw_data" ]
+   then
+      log_msg "ERROR: No valid data collected for $host (self_data and neighbor data empty)"
+      exit 1
+   fi
    log_msg "Parsing neighbor data"
    if [ "$SUPPRESS_CSV" -eq 1 ]
    then
-      # Resolve CSV path
-      case "$csv_file" in
-         */*)
-            # Path specified
-            csv_path="$csv_file"
-            csv_dir=$(dirname "$csv_path")
-            if [ ! -d "$csv_dir" ]
-            then
-               log_msg "ERROR: Directory $csv_dir does not exist"
-               exit 1
-            fi
-            if [ ! -w "$csv_dir" ]
-            then
-               log_msg "ERROR: Directory $csv_dir is not writable"
-               exit 1
-            fi
-            ;;
-         *)
-            # No path, try current directory, then $HOME
-            csv_path="./$csv_file"
-            if [ ! -w . ]
-            then
-               log_msg "WARNING: Current directory not writable, falling back to $HOME"
-               csv_path="$HOME/$csv_file"
-               if [ ! -w "$HOME" ]
-               then
-                  log_msg "ERROR: $HOME is not writable"
-                  exit 1
-               fi
-            fi
-            ;;
-      esac
+      csv_path=$(resolve_csv_path "$csv_file" "write")
       confirm_overwrite "$csv_path"
       parse_neighbors "$raw_data" "$self_data" > "$csv_path"
       log_msg "Inventory saved to $csv_path"
@@ -593,16 +634,12 @@ cleanup()
       then
          rm -f "$CRED_FILE" 2>/dev/null
          [ "$DEBUG" -eq 1 ] && log_msg "Debug: Removed temporary credentials file $CRED_FILE"
-         log_msg "Debug: Removed temporary credentials file $CRED_FILE"
-
       fi
-
       if [ -n "$tmp_hosts" ] && [ -f "$tmp_hosts" ]
       then
          rm -f "$tmp_hosts" 2>/dev/null
          [ "$DEBUG" -eq 1 ] && log_msg "Debug: Removed temporary MikroTik hosts file $tmp_hosts"
       fi
-
       if [ -n "$tmp_csv" ] && [ -f "$tmp_csv" ]
       then
          rm -f "$tmp_csv" 2>/dev/null
@@ -616,74 +653,38 @@ filter_hosts()
 {
    csv_file="$1"
    filter="$2"
-   # Resolve CSV path
-   case "$csv_file" in
-      */*)
-         # Path specified
-         csv_path="$csv_file"
-         csv_dir=$(dirname "$csv_path")
-         if [ ! -d "$csv_dir" ]
-         then
-            log_msg "ERROR: Directory $csv_dir does not exist"
-            exit 1
-         fi
-         ;;
-      *)
-         # No path, try current directory, then $HOME
-         csv_path="./$csv_file"
-         if [ ! -f "$csv_path" ] || [ ! -r "$csv_path" ] || [ ! -w "$csv_path" ]
-         then
-            log_msg "WARNING: CSV $csv_path not found or not readable/writable, trying $HOME"
-            csv_path="$HOME/$csv_file"
-         fi
-         ;;
-      esac
-      if [ ! -f "$csv_path" ]
-      then
-         log_msg "ERROR: CSV file $csv_path does not exist"
-         exit 1
-      fi
-      if [ ! -r "$csv_path" ]
-      then
-         log_msg "ERROR: CSV file $csv_path is not readable"
-         exit 1
-      fi
-      if [ ! -w "$csv_path" ]
-      then
-         log_msg "ERROR: CSV file $csv_path is not writable"
-         exit 1
-      fi
-      tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
-      awk -F',' -v filter="$filter" '
-         BEGIN {
-            OFS=","; count=0
+   csv_path=$(resolve_csv_path "$csv_file" "read")
+   tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
+   awk -F',' -v filter="$filter" '
+      BEGIN {
+         OFS=","; count=0
+      }
+      NR==1 { next }
+      {
+         model_name=tolower(gsub(/^"|"$/,"",$6))
+         identity=tolower(gsub(/^"|"$/,"",$1))
+         if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
+            print $1,$6; count++
          }
-         NR==1 { next }
-         {
-            model_name=tolower(gsub(/^"|"$/,"",$6))
-            identity=tolower(gsub(/^"|"$/,"",$1))
-            if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
-               print $1,$6; count++
-            }
+      }
+      END {
+         if (count == 0) {
+            print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
          }
-         END {
-            if (count == 0) {
-               print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
-            }
-         }
-      ' "$csv_path" > "$tmp_hosts"
-      if [ ! -s "$tmp_hosts" ]
-      then
-         log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
-         rm -f "$tmp_hosts"
-         exit 1
-      fi
-      log_msg "Hosts matched by filter '$filter':"
-      while IFS=',' read -r identity model_name
-      do
-         log_msg "  Identity: $identity, Model: $model_name"
-      done < "$tmp_hosts"
-      echo "$tmp_hosts,$csv_path"
+      }
+   ' "$csv_path" > "$tmp_hosts"
+   if [ ! -s "$tmp_hosts" ]
+   then
+      log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
+      rm -f "$tmp_hosts"
+      exit 1
+   fi
+   log_msg "Hosts matched by filter '$filter':"
+   while IFS=',' read -r identity model_name
+   do
+      log_msg "  Identity: $identity, Model: $model_name"
+   done < "$tmp_hosts"
+   echo "$tmp_hosts,$csv_path"
 }
 
 # Confirm upgrades
@@ -912,6 +913,11 @@ main()
             ;;
       esac
    done
+   # Validate RouterOS version if provided
+   if [ -n "$ROS_VERSION" ]
+   then
+      validate_ros_version "$ROS_VERSION"
+   fi
    # Set up logging if enabled
    if [ "$LOGGING" -eq 1 ]
    then
