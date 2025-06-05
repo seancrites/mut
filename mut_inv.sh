@@ -8,24 +8,24 @@
 # Last Updated: 2025-06-04
 #
 # Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
-# This script is licensed under the BSD 3-Clause License.
-# See the LICENSE file in the project root for the full license text.
+# See the BSD 3-Clause License in the repository root (LICENSE file) for details.
 #
 # Requirements:
 #    - POSIX-compliant shell (e.g., sh, bash, or dash)
+#    - POSIX utilities: awk, sed, read, stty, cat
 #    - SSH client (OpenSSH recommended, version 7.0 or later)
 #    - sshpass (version 1.06 or later)
 #    - Expect (version 5.45 or later) for mut_up.exp
-#    - Standard POSIX utilities: awk (mawk or gawk), sed, read, stty, cat
 #    - ping for host reachability checks
 #    - SSH access to MikroTik devices (port 22, admin privileges)
-#    - Write permissions for CSV output (current directory or $HOME, BACKUP_DIR, LOGS_DIR)
+#    - Write permissions for CSV output (current directory, $HOME, BACKUP_DIR, LOGS_DIR)
 #    - Optional: Configuration file (mut_opt.conf)
 #    - Environment: Linux or UNIX-like system
-#    - Warnings:
-#        - "WARNING: No valid neighbors found in output" for empty neighbor data
-#        - "WARNING: No hosts match filter criteria (routable IPv4 or IPv6)" for no routable IPs
-#        - "WARNING: Host <host> is not reachable, skipping upgrade" for unreachable hosts
+# Notes:
+#    - Warnings may include:
+#        - "No valid neighbors found in output" for empty neighbor data.
+#        - "No hosts match filter criteria (routable IPv4 or IPv6)" for no routable IPs.
+#        - "Host <host> is not reachable, skipping upgrade" for unreachable hosts.
 #
 # Usage: mut_inv.sh [-b [-c csv_file] | -u [-c csv_file] [-f filter] [-r version]] [-d] [-e] [-t] [-l] [-o options_file] [<host>]
 # Notes:
@@ -39,7 +39,7 @@
 #    - Enhanced logging (-e) logs MikroTik commands to CLI (requires -b or -u; with -d, -e is ignored as -d includes command logging).
 #    - Test mode (-t) simulates upgrades using -t flag in mut_up.exp.
 #    - Log mode (-l) enables logging to LOGS_DIR and displays output to user.
-#    - Non-POSIX utilities: ssh, sshpass, expect, ping
+#    - Non-POSIX utilities: ssh, sshpass, expect, ping, getent, host
 #
 
 # --- Default Configuration Variables ---
@@ -66,7 +66,7 @@ CLEANUP=1
 # Catch EXIT, INT, TERM, HUP to ensure cleanup of credentials file
 trap cleanup 0 1 2 15
 
-# --- Function Definitions ---
+# --- Functions ---
 
 # Print usage and exit
 usage()
@@ -343,6 +343,7 @@ resolve_host_to_ip()
    echo "$ip_addr"
 }
 
+# Execute SSH command
 ssh_exec()
 {
    host="$1"
@@ -593,16 +594,12 @@ cleanup()
       then
          rm -f "$CRED_FILE" 2>/dev/null
          [ "$DEBUG" -eq 1 ] && log_msg "Debug: Removed temporary credentials file $CRED_FILE"
-         log_msg "Debug: Removed temporary credentials file $CRED_FILE"
-
       fi
-
       if [ -n "$tmp_hosts" ] && [ -f "$tmp_hosts" ]
       then
          rm -f "$tmp_hosts" 2>/dev/null
          [ "$DEBUG" -eq 1 ] && log_msg "Debug: Removed temporary MikroTik hosts file $tmp_hosts"
       fi
-
       if [ -n "$tmp_csv" ] && [ -f "$tmp_csv" ]
       then
          rm -f "$tmp_csv" 2>/dev/null
