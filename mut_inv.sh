@@ -129,6 +129,60 @@ validate_ros_version()
    fi
 }
 
+# Resolve CSV path for reading or writing
+resolve_csv_path()
+{
+   csv_file="$1"
+   mode="$2" # "read" or "write"
+   case "$csv_file" in
+      */*)
+         csv_path="$csv_file"
+         csv_dir=$(dirname "$csv_path")
+         if [ ! -d "$csv_dir" ]
+         then
+            log_msg "ERROR: Directory $csv_dir does not exist"
+            exit 1
+         fi
+         if [ "$mode" = "write" ] && [ ! -w "$csv_dir" ]
+         then
+            log_msg "ERROR: Directory $csv_dir is not writable"
+            exit 1
+         fi
+         ;;
+      *)
+         csv_path="./$csv_file"
+         if [ "$mode" = "write" ] && [ ! -w . ]
+         then
+            log_msg "WARNING: Current directory not writable, falling back to $HOME"
+            csv_path="$HOME/$csv_file"
+            if [ ! -w "$HOME" ]
+            then
+               log_msg "ERROR: $HOME is not writable"
+               exit 1
+            fi
+         elif [ "$mode" = "read" ] && { [ ! -f "$csv_path" ] || [ ! -r "$csv_path" ]; }
+         then
+            log_msg "WARNING: CSV $csv_path not found or not readable, trying $HOME"
+            csv_path="$HOME/$csv_file"
+         fi
+         ;;
+   esac
+   if [ "$mode" = "read" ]
+   then
+      if [ ! -f "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path does not exist"
+         exit 1
+      fi
+      if [ ! -r "$csv_path" ]
+      then
+         log_msg "ERROR: CSV file $csv_path is not readable"
+         exit 1
+      fi
+   fi
+   echo "$csv_path"
+}
+
 # Perform pre-flight checks
 preflight_checks()
 {
@@ -552,41 +606,16 @@ build_inventory()
    then
       log_msg "WARNING: Empty output from :put [/ip/neighbor/print as-value], including only connected device"
    fi
+   # Check for completely empty data
+   if [ -z "$self_data" ] && [ -z "$raw_data" ]
+   then
+      log_msg "ERROR: No valid data collected for $host (self_data and neighbor data empty)"
+      exit 1
+   fi
    log_msg "Parsing neighbor data"
    if [ "$SUPPRESS_CSV" -eq 1 ]
    then
-      # Resolve CSV path
-      case "$csv_file" in
-         */*)
-            # Path specified
-            csv_path="$csv_file"
-            csv_dir=$(dirname "$csv_path")
-            if [ ! -d "$csv_dir" ]
-            then
-               log_msg "ERROR: Directory $csv_dir does not exist"
-               exit 1
-            fi
-            if [ ! -w "$csv_dir" ]
-            then
-               log_msg "ERROR: Directory $csv_dir is not writable"
-               exit 1
-            fi
-            ;;
-         *)
-            # No path, try current directory, then $HOME
-            csv_path="./$csv_file"
-            if [ ! -w . ]
-            then
-               log_msg "WARNING: Current directory not writable, falling back to $HOME"
-               csv_path="$HOME/$csv_file"
-               if [ ! -w "$HOME" ]
-               then
-                  log_msg "ERROR: $HOME is not writable"
-                  exit 1
-               fi
-            fi
-            ;;
-      esac
+      csv_path=$(resolve_csv_path "$csv_file" "write")
       confirm_overwrite "$csv_path"
       parse_neighbors "$raw_data" "$self_data" > "$csv_path"
       log_msg "Inventory saved to $csv_path"
@@ -624,74 +653,38 @@ filter_hosts()
 {
    csv_file="$1"
    filter="$2"
-   # Resolve CSV path
-   case "$csv_file" in
-      */*)
-         # Path specified
-         csv_path="$csv_file"
-         csv_dir=$(dirname "$csv_path")
-         if [ ! -d "$csv_dir" ]
-         then
-            log_msg "ERROR: Directory $csv_dir does not exist"
-            exit 1
-         fi
-         ;;
-      *)
-         # No path, try current directory, then $HOME
-         csv_path="./$csv_file"
-         if [ ! -f "$csv_path" ] || [ ! -r "$csv_path" ] || [ ! -w "$csv_path" ]
-         then
-            log_msg "WARNING: CSV $csv_path not found or not readable/writable, trying $HOME"
-            csv_path="$HOME/$csv_file"
-         fi
-         ;;
-      esac
-      if [ ! -f "$csv_path" ]
-      then
-         log_msg "ERROR: CSV file $csv_path does not exist"
-         exit 1
-      fi
-      if [ ! -r "$csv_path" ]
-      then
-         log_msg "ERROR: CSV file $csv_path is not readable"
-         exit 1
-      fi
-      if [ ! -w "$csv_path" ]
-      then
-         log_msg "ERROR: CSV file $csv_path is not writable"
-         exit 1
-      fi
-      tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
-      awk -F',' -v filter="$filter" '
-         BEGIN {
-            OFS=","; count=0
+   csv_path=$(resolve_csv_path "$csv_file" "read")
+   tmp_hosts="/tmp/mikrotik_hosts_$$.txt"
+   awk -F',' -v filter="$filter" '
+      BEGIN {
+         OFS=","; count=0
+      }
+      NR==1 { next }
+      {
+         model_name=tolower(gsub(/^"|"$/,"",$6))
+         identity=tolower(gsub(/^"|"$/,"",$1))
+         if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
+            print $1,$6; count++
          }
-         NR==1 { next }
-         {
-            model_name=tolower(gsub(/^"|"$/,"",$6))
-            identity=tolower(gsub(/^"|"$/,"",$1))
-            if ((tolower($6) ~ tolower(filter) || tolower($1) ~ tolower(filter)) && !seen[$1]++) {
-               print $1,$6; count++
-            }
+      }
+      END {
+         if (count == 0) {
+            print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
          }
-         END {
-            if (count == 0) {
-               print "No hosts matched filter \"" filter "\"" > "/dev/stderr"
-            }
-         }
-      ' "$csv_path" > "$tmp_hosts"
-      if [ ! -s "$tmp_hosts" ]
-      then
-         log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
-         rm -f "$tmp_hosts"
-         exit 1
-      fi
-      log_msg "Hosts matched by filter '$filter':"
-      while IFS=',' read -r identity model_name
-      do
-         log_msg "  Identity: $identity, Model: $model_name"
-      done < "$tmp_hosts"
-      echo "$tmp_hosts,$csv_path"
+      }
+   ' "$csv_path" > "$tmp_hosts"
+   if [ ! -s "$tmp_hosts" ]
+   then
+      log_msg "ERROR: No hosts found in $csv_path matching filter '$filter'"
+      rm -f "$tmp_hosts"
+      exit 1
+   fi
+   log_msg "Hosts matched by filter '$filter':"
+   while IFS=',' read -r identity model_name
+   do
+      log_msg "  Identity: $identity, Model: $model_name"
+   done < "$tmp_hosts"
+   echo "$tmp_hosts,$csv_path"
 }
 
 # Confirm upgrades
