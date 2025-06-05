@@ -391,79 +391,92 @@ is_valid_mac()
 parse_neighbors()
 {
    raw_data="$1"
-   if [ -z "$raw_data" ] || ! echo "$raw_data" | grep -q '.id='
+   self_data="$2" # Connected device data (CSV row)
+   if [ -z "$raw_data" ] && [ -z "$self_data" ]
    then
-      log_msg "WARNING: No valid neighbors found in output"
+      log_msg "WARNING: No valid neighbors or self data found"
       echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
       return
    fi
    tmp_output="/tmp/mikrotik_neighbors_$$.csv"
-   echo "$raw_data" | awk -v debug="$DEBUG" '
-      BEGIN {
-         RS=";"; FS="="; OFS=",";
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
-         count=0
-         print "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
-      }
-      /.id=/ {
-         if (identity != "" && ip_addr != "") {
-            if (debug) print "Debug: Processing entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
-            if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
-               identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
-               ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
-               mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
-               iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
-               platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
-               model_esc=model; gsub(/"/, "\"\"", model_esc)
-               version_esc=version; gsub(/"/, "\"\"", version_esc)
-               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
-               printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
-                      identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, mut_status_esc
-               if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
-               count++
-            } else {
-               if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+   {
+      echo "identity,ip_addr,mac_addr,interface,platform,model_name,version,mut_status"
+      # Output connected device data first, if provided
+      if [ -n "$self_data" ]
+      then
+         echo "$self_data"
+         [ "$DEBUG" -eq 1 ] && log_msg "Debug: Added connected device to CSV: $self_data"
+      fi
+      # Process neighbor data if present
+      if [ -n "$raw_data" ] && echo "$raw_data" | grep -q '.id='
+      then
+         echo "$raw_data" | awk -v debug="$DEBUG" '
+            BEGIN {
+               RS=";"; FS="="; OFS=",";
+               identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
+               count=0
             }
-         } else if (identity != "") {
-            if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
-         }
-         identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
-      }
-      /^address=/ { ip_addr=$2; if (debug) print "Debug: Set ip_addr=" ip_addr > "/dev/stderr" }
-      /^mac-address=/ { mac_addr=$2; if (debug) print "Debug: Set mac_addr=" mac_addr > "/dev/stderr" }
-      /^identity=/ { identity=$2 }
-      /^interface=/ { iface=$2 }
-      /^board=/ { model=$2 }
-      /^version=/ {
-         version=$2;
-         sub(/ \(.*/, "", version)
-      }
-      END {
-         if (identity != "" && ip_addr != "") {
-            if (debug) print "Debug: Processing final entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
-            if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
-               identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
-               ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
-               mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
-               iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
-               platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
-               model_esc=model; gsub(/"/, "\"\"", model_esc)
-               version_esc=version; gsub(/"/, "\"\"", version_esc)
-               mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
-               printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
-                      identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
-                      platform_esc, model_esc, version_esc, mut_status_esc
-               if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
-               count++
-            } else {
-               if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+            /.id=/ {
+               if (identity != "" && ip_addr != "") {
+                  if (debug) print "Debug: Processing entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
+                  if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
+                     identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
+                     ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
+                     mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
+                     iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
+                     platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
+                     model_esc=model; gsub(/"/, "\"\"", model_esc)
+                     version_esc=version; gsub(/"/, "\"\"", version_esc)
+                     mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
+                     printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                            identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
+                            platform_esc, model_esc, version_esc, mut_status_esc
+                     if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
+                     count++
+                  } else {
+                     if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+                  }
+               } else if (identity != "") {
+                  if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+               }
+               identity=""; ip_addr=""; mac_addr=""; iface=""; platform="MikroTik"; model=""; version=""; mut_status=""
             }
-         } else if (identity != "") {
-            if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
-         }
-      }
-   ' > "$tmp_output"
+            /^address=/ { ip_addr=$2; if (debug) print "Debug: Set ip_addr=" ip_addr > "/dev/stderr" }
+            /^mac-address=/ { mac_addr=$2; if (debug) print "Debug: Set mac_addr=" mac_addr > "/dev/stderr" }
+            /^identity=/ { identity=$2 }
+            /^interface=/ { iface=$2 }
+            /^board=/ { model=$2 }
+            /^version=/ {
+               version=$2;
+               sub(/ \(.*/, "", version)
+            }
+            END {
+               if (identity != "" && ip_addr != "") {
+                  if (debug) print "Debug: Processing final entry: identity=" identity ", ip_addr=" ip_addr ", mac_addr=" mac_addr > "/dev/stderr"
+                  if (ip_addr !~ /^fe80::/ && (ip_addr ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ip_addr ~ /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/)) {
+                     identity_esc=identity; gsub(/"/, "\"\"", identity_esc)
+                     ip_addr_esc=ip_addr; gsub(/"/, "\"\"", ip_addr_esc)
+                     mac_addr_esc=mac_addr; gsub(/"/, "\"\"", mac_addr_esc)
+                     iface_esc=iface; gsub(/"/, "\"\"", iface_esc)
+                     platform_esc=platform; gsub(/"/, "\"\"", platform_esc)
+                     model_esc=model; gsub(/"/, "\"\"", model_esc)
+                     version_esc=version; gsub(/"/, "\"\"", version_esc)
+                     mut_status_esc=mut_status; gsub(/"/, "\"\"", mut_status_esc)
+                     printf "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                            identity_esc, ip_addr_esc, mac_addr_esc, iface_esc,
+                            platform_esc, model_esc, version_esc, mut_status_esc
+                     if (debug) print "Discovered: " identity " (" ip_addr ")" > "/dev/stderr"
+                     count++
+                  } else {
+                     if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+                  }
+               } else if (identity != "") {
+                  if (debug) print "Skipping entry: identity=" identity " (ip_addr=" ip_addr ", mac_addr=" mac_addr ")" > "/dev/stderr"
+               }
+            }
+         '
+      fi
+   } > "$tmp_output"
    cat "$tmp_output"
    neighbor_count=$(awk 'NR>1' "$tmp_output" | wc -l)
    neighbor_count=$((neighbor_count))
