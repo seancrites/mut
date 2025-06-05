@@ -3,7 +3,7 @@
 # Script: mut_inv.sh
 # Purpose: Builds a MikroTik inventory CSV or performs upgrades using neighbor data or existing CSV
 # Author: Sean Crites
-# Version: 1.1.7
+# Version: 1.1.10
 # Created: 2025-05-18
 # Last Updated: 2025-06-04
 #
