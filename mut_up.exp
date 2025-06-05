@@ -679,12 +679,21 @@ close $fp
 
 set username ""
 set password ""
-foreach line [split $creds "\n"] {
-   if {[regexp {^username=(.*)$} $line {} value]} {
+set creds [split [string trim $creds] "\n"]
+foreach line $creds {
+   if {$line == "" || [regexp {^\s*#} $line]} {
+      continue
+   }
+   if {![regexp {^(\w+)=(.*)$} $line {} key value]} {
+      fail_with_error "Invalid line in $cred_file: '$line'" 5
+   }
+   if {$key == "username"} {
       set username $value
-   } elseif {[regexp {^password=(.*)$} $line {} value]} {
+   } elseif {$key == "password"} {
       #pragma: password
       set password $value
+   } else {
+      debug_log "Ignoring unknown key in $cred_file: $key"
    }
 }
 
