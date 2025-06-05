@@ -432,9 +432,9 @@ proc check_and_reboot_firmware {host username password prompt max_attempts test_
                         "password:" {
                            log_user 0
                            # Disable/Enable internal debugging to prevent password logging
-                           if {$debug_mode} { 
+                           if {$debug_mode} {
                               exp_internal 0
-                              debug_log "Sending password ******" 
+                              debug_log "Sending password ******"
                            }
                            send "$password\r"
                            if {$debug_mode} { exp_internal 1 }
@@ -705,9 +705,9 @@ expect {
    "password:" {
       log_user 0
       # Disable/Enable internal debugging to prevent password logging
-      if {$debug_mode} { 
+      if {$debug_mode} {
          exp_internal 0
-         debug_log "Sending password ******" 
+         debug_log "Sending password ******"
       }
       send "$password\r"
       if {$debug_mode} { exp_internal 1 }
@@ -808,9 +808,9 @@ expect {
                         "password:" {
                            log_user 0
                            # Disable/Enable internal debugging to prevent password logging
-                           if {$debug_mode} { 
+                           if {$debug_mode} {
                               exp_internal 0
-                              debug_log "Sending password ******" 
+                              debug_log "Sending password ******"
                            }
                            send "$password\r"
                            if {$debug_mode} { exp_internal 1 }
@@ -1141,9 +1141,9 @@ while {$attempt < $max_attempts} {
       "password:" {
          log_user 0
          # Disable/Enable internal debugging to prevent password logging
-         if {$debug_mode} { 
+         if {$debug_mode} {
             exp_internal 0
-            debug_log "Sending password ******" 
+            debug_log "Sending password ******"
          }
          send "$password\r"
          if {$debug_mode} { exp_internal 1 }
@@ -1218,9 +1218,9 @@ expect {
                         "password:" {
                            log_user 0
                            # Disable/Enable internal debugging to prevent password logging
-                           if {$debug_mode} { 
+                           if {$debug_mode} {
                               exp_internal 0
-                              debug_log "Sending password ******" 
+                              debug_log "Sending password ******"
                            }
                            send "$password\r"
                            if {$debug_mode} { exp_internal 1 }
