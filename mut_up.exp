@@ -8,19 +8,23 @@
 # Last Updated: 2025-06-04
 #
 # Copyright (c) 2025 Sean Crites <sean.crites@gmail.com>
-# This script is licensed under the BSD 3-Clause License.
-# See the LICENSE file in the project root for the full license text.
+# See the BSD 3-Clause License in the repository root (LICENSE file) for details.
 #
 # Requirements:
 #    - Expect (version 5.45 or later)
-#    - SSH client (OpenSSH recommended, version 7.0 or later)
-#    - scp for file transfers
-#    - sshpass (version 1.06 or later) for non-interactive SCP
-#    - sh for executing SCP commands
+#    - External commands: ssh, scp, sshpass, sh
 #    - RouterOS .npk files in ROS_IMAGE_DIR
 #    - Credentials file with username and password
 #    - SSH access to MikroTik device (port 22, admin privileges)
 #    - Write permissions for BACKUP_DIR and LOGS_DIR
+# Notes:
+#    - Exit codes:
+#        - 0: Success
+#        - 1: Invalid credentials
+#        - 2: SSH timeout
+#        - 3: Connection refused
+#        - 4: General SSH failure
+#        - 5: Other errors (e.g., missing credentials, file issues)
 #
 # Usage:
 #   mut_up.exp [-t|--test] [-d|--debug] [-e] [-l] [-r version] <host> <backup_dir> <ros_image_dir> <cred_file>
@@ -35,23 +39,19 @@
 #    - The -d option generates a debug log (logs/mut_upgrade_debug_*.log) containing all CLI interactions, Expect diagnostics, and upgrade log messages, independent of -l.
 #    - Debug mode (-d) outputs debug details to both the console (stderr for diagnostics, stdout for CLI) and the debug log, with passwords suppressed for security.
 #    - Without -d or -e, console output is limited to upgrade messages (stderr), suppressing MikroTik commands, banner, and CLI interactions.
-#    - Exit codes:
-#        - 0: Success
-#        - 1: Invalid credentials (Permission denied, Login failed)
-#        - 2: SSH timeout
-#        - 3: Connection refused
-#        - 4: General SSH failure
-#        - 5: Other errors (e.g., missing credentials, file issues)
 #
 
 # Initialize variables
-set reboot_initiated 0
-set max_attempts 60
-set early_exit 0
-set mtik_cli "+tce200w"
-set enhanced_logging 0
+set reboot_initiated    0
+set max_attempts        60
+set early_exit          0
+set mtik_cli            "+tce200w"
+set enhanced_logging    0
+set timeout             30
 
 log_user 0
+
+# --- Procedures ---
 
 # Display help message
 if {[lindex $argv 0] == "--help"} {
@@ -513,10 +513,11 @@ proc check_and_reboot_firmware {host username password prompt max_attempts test_
 }
 
 # Parse arguments
-set test_mode 0
-set debug_mode 0
-set logging 0
+set test_mode      0
+set debug_mode     0
+set logging        0
 set target_version ""
+
 set argv_new {}
 set i 0
 set argc [llength $argv]
@@ -565,16 +566,17 @@ if {[llength $argv] != 4} {
    fail_with_error "Usage: [info script] \[-t|--test\] \[-d|--debug\] \[-e\] \[-l\] \[-r version\] <host> <backup_dir> <ros_image_dir> <cred_file>" 5
 }
 
-set host_cli [lindex $argv 0]
-set backup_dir [lindex $argv 1]
-set ros_image_dir [lindex $argv 2]
-set cred_file [lindex $argv 3]
+set host_cli       [lindex $argv 0]
+set backup_dir     [lindex $argv 1]
+set ros_image_dir  [lindex $argv 2]
+set cred_file      [lindex $argv 3]
 
-set script_dir [file dirname [info script]]
-set logs_dir "$script_dir/logs"
+set script_dir     [file dirname [info script]]
+set logs_dir       "$script_dir/logs"
 
 # Source options file
 set options_file "$script_dir/mut_opt.conf"
+
 if {[file exists $options_file] && [file readable $options_file]} {
    set fp [open $options_file r]
    while {[gets $fp line] >= 0} {
@@ -861,7 +863,13 @@ expect {
       log_msg "Downloading backup file"
       set scp_cmd "SSHPASS='$password' sshpass -e scp -o StrictHostKeyChecking=no $username@$host:backup-$timestamp.rsc $backup_file"
       if {[catch {exec sh -c $scp_cmd} result]} {
-         fail_with_error "SCP download failed: $result" 5
+         if {[regexp {Permission denied} $result]} {
+            fail_with_error "SCP failed for $backup_file: Permission denied" 1
+         } elseif {[regexp {No route to host} $result]} {
+            fail_with_error "SCP failed for $backup_file: No route to host" 3
+         } else {
+            fail_with_error "SCP failed for $backup_file: $result" 5
+         }
       }
       log_msg "Backup saved to $backup_file"
       if {![file readable $backup_file]} {
@@ -1035,7 +1043,13 @@ if {$test_mode} {
       log_msg "Uploading $npk_file to $host"
       set scp_cmd "SSHPASS='$password' sshpass -e scp -o StrictHostKeyChecking=no $npk_file $username@$host:/[file tail $npk_file]"
       if {[catch {exec sh -c $scp_cmd} result]} {
-         fail_with_error "SCP upload failed for $npk_file: $result" 5
+         if {[regexp {Permission denied} $result]} {
+            fail_with_error "SCP failed for $npk_file: Permission denied" 1
+         } elseif {[regexp {No route to host} $result]} {
+            fail_with_error "SCP failed for $npk_file: No route to host" 3
+         } else {
+            fail_with_error "SCP failed for $npk_file: $result" 5
+         }
       }
       log_msg "File upload completed for $npk_file"
    }
