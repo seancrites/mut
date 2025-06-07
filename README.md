@@ -285,6 +285,10 @@ Contributions are welcome! Please:
 4. Push to the branch (`git push origin feature/your-feature`).
 5. Open a pull request.
 
+## Github Topics
+
+Mikrotik, network-management, inventory-management, network-automation, routeros, shell-scripting, firmware-upgrade, mikrotik-backup-script, systems-administration, mikrotik-router, mikrotik-routeros, mikrotik-update, routeros-scripts, posix-shell, mikrotik-switch, expect-scripting.
+
 ## License
 
 This project is licensed under the BSD 3-Clause License. See the `LICENSE` file for details.
